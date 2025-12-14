@@ -1,6 +1,7 @@
 //! 日志管理模块
 use chrono::{Local, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -15,7 +16,7 @@ pub struct LogEntry {
 }
 
 pub struct LogStore {
-    logs: Vec<LogEntry>,
+    logs: VecDeque<LogEntry>,
     max_logs: usize,
     log_file_path: Option<PathBuf>,
 }
@@ -34,7 +35,7 @@ impl Default for LogStore {
         let log_file = log_dir.join("proxycast.log");
 
         Self {
-            logs: Vec::new(),
+            logs: VecDeque::new(),
             max_logs: 1000,
             log_file_path: Some(log_file),
         }
@@ -54,7 +55,7 @@ impl LogStore {
             message: message.to_string(),
         };
 
-        self.logs.push(entry.clone());
+        self.logs.push_back(entry.clone());
 
         // 写入日志文件
         if let Some(ref path) = self.log_file_path {
@@ -68,7 +69,7 @@ impl LogStore {
 
         // 保持日志数量在限制内
         if self.logs.len() > self.max_logs {
-            self.logs.remove(0);
+            self.logs.pop_front();
         }
     }
 
@@ -90,7 +91,7 @@ impl LogStore {
     }
 
     pub fn get_logs(&self) -> Vec<LogEntry> {
-        self.logs.clone()
+        self.logs.iter().cloned().collect()
     }
 
     pub fn clear(&mut self) {

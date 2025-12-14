@@ -126,6 +126,7 @@ async fn reload_credentials(
     logs.write().await.add("info", "Reloading credentials...");
     s.kiro_provider
         .load_credentials()
+        .await
         .map_err(|e| e.to_string())?;
     logs.write().await.add("info", "Credentials reloaded");
     Ok("Credentials reloaded".to_string())
@@ -234,7 +235,7 @@ fn mask_token(token: &str) -> String {
     } else {
         let prefix: String = chars[..6].iter().collect();
         let suffix: String = chars[chars.len() - 4..].iter().collect();
-        format!("{}****{}", prefix, suffix)
+        format!("{prefix}****{suffix}")
     }
 }
 
@@ -276,7 +277,7 @@ async fn check_and_reload_credentials(
             .add("info", "[自动检测] 凭证文件已变化，正在重新加载...");
 
         let mut s = state.write().await;
-        match s.kiro_provider.load_credentials() {
+        match s.kiro_provider.load_credentials().await {
             Ok(_) => {
                 logs.write()
                     .await
@@ -353,6 +354,7 @@ async fn reload_gemini_credentials(
     logs.write().await.add("info", "[Gemini] 正在加载凭证...");
     s.gemini_provider
         .load_credentials()
+        .await
         .map_err(|e| e.to_string())?;
     logs.write().await.add("info", "[Gemini] 凭证加载成功");
     Ok("Gemini credentials reloaded".to_string())
@@ -451,7 +453,7 @@ async fn check_and_reload_gemini_credentials(
             .add("info", "[Gemini][自动检测] 凭证文件已变化，正在重新加载...");
 
         let mut s = state.write().await;
-        match s.gemini_provider.load_credentials() {
+        match s.gemini_provider.load_credentials().await {
             Ok(_) => {
                 logs.write()
                     .await
@@ -522,6 +524,7 @@ async fn reload_qwen_credentials(
     logs.write().await.add("info", "[Qwen] 正在加载凭证...");
     s.qwen_provider
         .load_credentials()
+        .await
         .map_err(|e| e.to_string())?;
     logs.write().await.add("info", "[Qwen] 凭证加载成功");
     Ok("Qwen credentials reloaded".to_string())
@@ -610,7 +613,7 @@ async fn check_and_reload_qwen_credentials(
 ) -> Result<CheckResult, String> {
     let path = providers::qwen::QwenProvider::default_creds_path();
 
-    if !path.exists() {
+    if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
         return Ok(CheckResult {
             changed: false,
             new_hash: "".to_string(),
@@ -618,7 +621,7 @@ async fn check_and_reload_qwen_credentials(
         });
     }
 
-    let content = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let content = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
     let new_hash = format!("{:x}", md5::compute(&content));
 
     if !last_hash.is_empty() && new_hash != last_hash {
@@ -627,7 +630,7 @@ async fn check_and_reload_qwen_credentials(
             .add("info", "[Qwen][自动检测] 凭证文件已变化，正在重新加载...");
 
         let mut s = state.write().await;
-        match s.qwen_provider.load_credentials() {
+        match s.qwen_provider.load_credentials().await {
             Ok(_) => {
                 logs.write()
                     .await
@@ -1135,11 +1138,56 @@ async fn test_api(
 pub fn run() {
     let config = config::load_config().unwrap_or_default();
     let state: AppState = Arc::new(RwLock::new(server::ServerState::new(config)));
+    let logs: LogState = Arc::new(RwLock::new(logger::LogStore::new()));
+
+    // Clone for setup hook
+    let state_clone = state.clone();
+    let logs_clone = logs.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(state)
-        .manage(Arc::new(RwLock::new(logger::LogStore::new())))
+        .manage(logs)
+        .setup(move |_app| {
+            // 自动启动服务器
+            let state = state_clone.clone();
+            let logs = logs_clone.clone();
+            tauri::async_runtime::spawn(async move {
+                // 先加载凭证
+                {
+                    let mut s = state.write().await;
+                    if let Err(e) = s.kiro_provider.load_credentials().await {
+                        logs.write()
+                            .await
+                            .add("warn", &format!("[启动] 加载 Kiro 凭证失败: {e}"));
+                    } else {
+                        logs.write().await.add("info", "[启动] Kiro 凭证已加载");
+                    }
+                }
+                // 启动服务器
+                {
+                    let mut s = state.write().await;
+                    logs.write()
+                        .await
+                        .add("info", "[启动] 正在自动启动服务器...");
+                    match s.start(logs.clone()).await {
+                        Ok(_) => {
+                            let host = s.config.server.host.clone();
+                            let port = s.config.server.port;
+                            logs.write()
+                                .await
+                                .add("info", &format!("[启动] 服务器已启动: {host}:{port}"));
+                        }
+                        Err(e) => {
+                            logs.write()
+                                .await
+                                .add("error", &format!("[启动] 服务器启动失败: {e}"));
+                        }
+                    }
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             start_server,
             stop_server,

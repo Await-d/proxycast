@@ -56,15 +56,9 @@ pub struct ServerState {
 
 impl ServerState {
     pub fn new(config: Config) -> Self {
-        let mut kiro = KiroProvider::new();
-        let _ = kiro.load_credentials();
-
-        let mut gemini = GeminiProvider::new();
-        let _ = gemini.load_credentials();
-
-        let mut qwen = QwenProvider::new();
-        let _ = qwen.load_credentials();
-
+        let kiro = KiroProvider::new();
+        let gemini = GeminiProvider::new();
+        let qwen = QwenProvider::new();
         let openai_custom = OpenAICustomProvider::new();
         let claude_custom = ClaudeCustomProvider::new();
 
@@ -108,7 +102,7 @@ impl ServerState {
         let api_key = self.config.server.api_key.clone();
 
         // 重新加载凭证
-        let _ = self.kiro_provider.load_credentials();
+        let _ = self.kiro_provider.load_credentials().await;
         let kiro = self.kiro_provider.clone();
 
         tokio::spawn(async move {
@@ -141,6 +135,7 @@ impl Clone for KiroProvider {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct AppState {
     api_key: String,
     kiro: Arc<RwLock<KiroProvider>>,
@@ -270,11 +265,13 @@ async fn chat_completions(
         ),
     );
 
-    // 检查是否需要刷新 token
+    // 检查是否需要刷新 token（无 token 或即将过期）
     {
         let _guard = state.kiro_refresh_lock.lock().await;
         let mut kiro = state.kiro.write().await;
-        if kiro.credentials.access_token.is_none() {
+        let needs_refresh =
+            kiro.credentials.access_token.is_none() || kiro.is_token_expiring_soon();
+        if needs_refresh {
             if let Err(e) = kiro.refresh_token().await {
                 state
                     .logs
@@ -528,16 +525,17 @@ async fn anthropic_messages(
         );
     }
 
-    // 检查是否需要刷新 token
+    // 检查是否需要刷新 token（无 token 或即将过期）
     {
         let _guard = state.kiro_refresh_lock.lock().await;
         let mut kiro = state.kiro.write().await;
-        if kiro.credentials.access_token.is_none() {
-            state
-                .logs
-                .write()
-                .await
-                .add("info", "[AUTH] No access token, attempting refresh...");
+        let needs_refresh =
+            kiro.credentials.access_token.is_none() || kiro.is_token_expiring_soon();
+        if needs_refresh {
+            state.logs.write().await.add(
+                "info",
+                "[AUTH] No access token or token expiring soon, attempting refresh...",
+            );
             if let Err(e) = kiro.refresh_token().await {
                 state
                     .logs
@@ -635,19 +633,11 @@ async fn anthropic_messages(
 
                         // 如果请求流式响应，返回 SSE 格式
                         if request.stream {
-                            return build_anthropic_stream_response(
-                                &request.model,
-                                &parsed.content,
-                                &parsed.tool_calls,
-                            );
+                            return build_anthropic_stream_response(&request.model, &parsed);
                         }
 
                         // 非流式响应
-                        build_anthropic_response(
-                            &request.model,
-                            &parsed.content,
-                            &parsed.tool_calls,
-                        )
+                        build_anthropic_response(&request.model, &parsed)
                     }
                     Err(e) => {
                         state
@@ -702,14 +692,12 @@ async fn anthropic_messages(
                                             if request.stream {
                                                 return build_anthropic_stream_response(
                                                     &request.model,
-                                                    &parsed.content,
-                                                    &parsed.tool_calls,
+                                                    &parsed,
                                                 );
                                             }
                                             return build_anthropic_response(
                                                 &request.model,
-                                                &parsed.content,
-                                                &parsed.tool_calls,
+                                                &parsed,
                                             );
                                         }
                                         Err(e) => {
@@ -808,18 +796,18 @@ async fn anthropic_messages(
 }
 
 /// 构建 Anthropic 非流式响应
-fn build_anthropic_response(model: &str, content: &str, tool_calls: &[ToolCall]) -> Response {
-    let has_tool_calls = !tool_calls.is_empty();
+fn build_anthropic_response(model: &str, parsed: &CWParsedResponse) -> Response {
+    let has_tool_calls = !parsed.tool_calls.is_empty();
     let mut content_array: Vec<serde_json::Value> = Vec::new();
 
-    if !content.is_empty() {
+    if !parsed.content.is_empty() {
         content_array.push(serde_json::json!({
             "type": "text",
-            "text": content
+            "text": parsed.content
         }));
     }
 
-    for tc in tool_calls {
+    for tc in &parsed.tool_calls {
         let input: serde_json::Value =
             serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::json!({}));
         content_array.push(serde_json::json!({
@@ -834,6 +822,15 @@ fn build_anthropic_response(model: &str, content: &str, tool_calls: &[ToolCall])
         content_array.push(serde_json::json!({"type": "text", "text": ""}));
     }
 
+    // 估算 output tokens: 基于响应内容长度 (约 4 字符 = 1 token)
+    let mut output_tokens: u32 = (parsed.content.len() / 4) as u32;
+    for tc in &parsed.tool_calls {
+        output_tokens += (tc.function.arguments.len() / 4) as u32;
+    }
+    // 从 context_usage_percentage 估算 input tokens
+    // 假设 100% = 200k tokens (Claude 的上下文窗口)
+    let input_tokens = ((parsed.context_usage_percentage / 100.0) * 200000.0) as u32;
+
     let response = serde_json::json!({
         "id": format!("msg_{}", uuid::Uuid::new_v4()),
         "type": "message",
@@ -842,22 +839,29 @@ fn build_anthropic_response(model: &str, content: &str, tool_calls: &[ToolCall])
         "model": model,
         "stop_reason": if has_tool_calls { "tool_use" } else { "end_turn" },
         "stop_sequence": null,
-        "usage": {"input_tokens": 0, "output_tokens": 0}
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens
+        }
     });
     Json(response).into_response()
 }
 
 /// 构建 Anthropic 流式响应 (SSE)
-fn build_anthropic_stream_response(
-    model: &str,
-    content: &str,
-    tool_calls: &[ToolCall],
-) -> Response {
-    let has_tool_calls = !tool_calls.is_empty();
+fn build_anthropic_stream_response(model: &str, parsed: &CWParsedResponse) -> Response {
+    let has_tool_calls = !parsed.tool_calls.is_empty();
     let message_id = format!("msg_{}", uuid::Uuid::new_v4());
     let model = model.to_string();
-    let content = content.to_string();
-    let tool_calls = tool_calls.to_vec();
+    let content = parsed.content.clone();
+    let tool_calls = parsed.tool_calls.clone();
+
+    // 估算 output tokens: 基于响应内容长度 (约 4 字符 = 1 token)
+    let mut output_tokens: u32 = (parsed.content.len() / 4) as u32;
+    for tc in &parsed.tool_calls {
+        output_tokens += (tc.function.arguments.len() / 4) as u32;
+    }
+    // 从 context_usage_percentage 估算 input tokens
+    let input_tokens = ((parsed.context_usage_percentage / 100.0) * 200000.0) as u32;
 
     // 构建 SSE 事件流
     let mut events: Vec<String> = Vec::new();
@@ -873,7 +877,7 @@ fn build_anthropic_stream_response(
             "content": [],
             "stop_reason": null,
             "stop_sequence": null,
-            "usage": {"input_tokens": 0, "output_tokens": 0}
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0}
         }
     });
     events.push(format!("event: message_start\ndata: {message_start}\n\n"));
@@ -962,7 +966,7 @@ fn build_anthropic_stream_response(
             "stop_reason": if has_tool_calls { "tool_use" } else { "end_turn" },
             "stop_sequence": null
         },
-        "usage": {"output_tokens": 0}
+        "usage": {"output_tokens": output_tokens}
     });
     events.push(format!("event: message_delta\ndata: {message_delta}\n\n"));
 
@@ -1010,6 +1014,8 @@ async fn count_tokens(
 struct CWParsedResponse {
     content: String,
     tool_calls: Vec<ToolCall>,
+    usage_credits: f64,
+    context_usage_percentage: f64,
 }
 
 /// 解析 CodeWhisperer AWS Event Stream 响应
@@ -1033,6 +1039,8 @@ fn parse_cw_response(body: &str) -> CWParsedResponse {
         b"{\"stop\":",
         b"{\"followupPrompt\":",
         b"{\"toolUseId\":",
+        b"{\"unit\":",                   // meteringEvent
+        b"{\"contextUsagePercentage\":", // contextUsageEvent
     ];
 
     let mut pos = 0;
@@ -1043,7 +1051,7 @@ fn parse_cw_response(body: &str) -> CWParsedResponse {
         for pattern in json_patterns {
             if let Some(idx) = find_subsequence(&bytes[pos..], pattern) {
                 let abs_pos = pos + idx;
-                if next_start.map_or(true, |start| abs_pos < start) {
+                if next_start.is_none_or(|start| abs_pos < start) {
                     next_start = Some(abs_pos);
                 }
             }
@@ -1110,6 +1118,16 @@ fn parse_cw_response(body: &str) -> CWParsedResponse {
                 // 处理独立的 stop 事件（没有 toolUseId）
                 else if value.get("stop").and_then(|v| v.as_bool()).unwrap_or(false) {
                     // 这种情况不应该发生，但以防万一
+                }
+                // 处理 meteringEvent: {"unit":"credit","unitPlural":"credits","usage":0.34}
+                else if let Some(usage) = value.get("usage").and_then(|v| v.as_f64()) {
+                    result.usage_credits = usage;
+                }
+                // 处理 contextUsageEvent: {"contextUsagePercentage":54.36}
+                else if let Some(ctx_usage) =
+                    value.get("contextUsagePercentage").and_then(|v| v.as_f64())
+                {
+                    result.context_usage_percentage = ctx_usage;
                 }
             }
             pos = start + json_str.len();

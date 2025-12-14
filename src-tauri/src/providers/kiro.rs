@@ -172,7 +172,7 @@ impl KiroProvider {
         }
 
         // 保存更新后的凭证到文件
-        self.save_credentials()?;
+        self.save_credentials().await?;
 
         Ok(new_token.to_string())
     }
@@ -181,7 +181,8 @@ impl KiroProvider {
         let path = Self::default_creds_path();
 
         // 读取现有文件内容
-        let mut existing: serde_json::Value = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        let mut existing: serde_json::Value = if tokio::fs::try_exists(&path).await.unwrap_or(false)
+        {
             let content = tokio::fs::read_to_string(&path).await?;
             serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
         } else {
@@ -204,6 +205,19 @@ impl KiroProvider {
         tokio::fs::write(&path, content).await?;
 
         Ok(())
+    }
+
+    /// 检查 token 是否即将过期（10 分钟内）
+    pub fn is_token_expiring_soon(&self) -> bool {
+        if let Some(expires_at) = &self.credentials.expires_at {
+            if let Ok(expiry) = chrono::DateTime::parse_from_rfc3339(expires_at) {
+                let now = chrono::Utc::now();
+                let threshold = now + chrono::Duration::minutes(10);
+                return expiry < threshold;
+            }
+        }
+        // 如果没有过期时间，假设不需要刷新
+        false
     }
 
     pub async fn call_api(
@@ -238,7 +252,7 @@ impl KiroProvider {
                 .unwrap_or_default()
                 .join(".proxycast")
                 .join("logs")
-                .join(format!("cw_request_{}.json", uuid_prefix));
+                .join(format!("cw_request_{uuid_prefix}.json"));
             let _ = tokio::fs::write(&debug_path, &json_str).await;
             tracing::debug!("[CW_REQ] Request saved to {:?}", debug_path);
 

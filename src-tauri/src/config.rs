@@ -44,8 +44,8 @@ impl Default for Config {
         Self {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
-                port: 3001,
-                api_key: "proxycast-key".to_string(),
+                port: 8999,
+                api_key: "proxy_cast".to_string(),
             },
             providers: ProvidersConfig {
                 kiro: ProviderConfig {

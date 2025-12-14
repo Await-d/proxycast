@@ -224,7 +224,7 @@ impl GeminiProvider {
         }
 
         // Save refreshed credentials
-        self.save_credentials()?;
+        self.save_credentials().await?;
 
         Ok(new_token.to_string())
     }
