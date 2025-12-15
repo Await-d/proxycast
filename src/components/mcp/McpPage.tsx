@@ -4,6 +4,7 @@ import { useMcpServers } from "@/hooks/useMcpServers";
 import { McpServer } from "@/lib/api/mcp";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { HelpTip } from "@/components/HelpTip";
 
 // 预设 MCP 服务器配置
 const mcpPresets = [
@@ -294,6 +295,19 @@ export function McpPage() {
           </button>
         </div>
       </div>
+
+      <HelpTip title="什么是 MCP？" variant="blue">
+        <ul className="list-disc list-inside space-y-1 text-sm text-blue-700 dark:text-blue-400">
+          <li>
+            MCP (Model Context Protocol) 是 AI 工具扩展协议，让 AI
+            能访问文件系统、数据库等外部资源
+          </li>
+          <li>
+            在此添加 MCP 服务器后，可同步到 Claude Code、Codex、Gemini CLI
+          </li>
+          <li>也可从这些工具导入已有的 MCP 配置，统一管理</li>
+        </ul>
+      </HelpTip>
 
       {error && (
         <div className="rounded-lg border border-destructive bg-destructive/10 p-4 mb-4">

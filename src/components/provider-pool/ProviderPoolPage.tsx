@@ -13,6 +13,7 @@ import { AddCredentialModal } from "./AddCredentialModal";
 import { EditCredentialModal } from "./EditCredentialModal";
 import { ErrorDisplay, useErrorDisplay } from "./ErrorDisplay";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { HelpTip } from "@/components/HelpTip";
 import type {
   PoolProviderType,
   CredentialDisplay,
@@ -211,7 +212,7 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
           <div>
             <h2 className="text-2xl font-bold">凭证池</h2>
             <p className="text-muted-foreground">
-              管理多个凭证，支持负载均衡和健康检测
+              管理多个 AI 服务凭证，支持负载均衡和健康检测
             </p>
           </div>
           <button
@@ -223,6 +224,24 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
             刷新
           </button>
         </div>
+
+        <HelpTip title="什么是凭证池？" variant="amber">
+          <ul className="list-disc list-inside space-y-1 text-sm text-amber-700 dark:text-amber-400">
+            <li>
+              <span className="font-medium">Kiro/Gemini/Qwen</span>
+              ：上传对应工具的凭证文件，ProxyCast 会自动管理 Token 刷新
+            </li>
+            <li>
+              <span className="font-medium">OpenAI/Claude</span>：直接填入 API
+              Key，用于转发请求
+            </li>
+            <li>多个凭证会自动轮询负载均衡，单个凭证失效不影响服务</li>
+            <li>
+              在 <span className="font-medium">API Server</span> 页面选择默认
+              Provider 后，请求会自动使用对应凭证池
+            </li>
+          </ul>
+        </HelpTip>
 
         {error && (
           <div className="rounded-lg border border-red-500 bg-red-50 p-4 text-red-700 dark:bg-red-950/30">

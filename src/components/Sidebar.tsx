@@ -30,7 +30,7 @@ interface SidebarProps {
 const navItems = [
   { id: "dashboard" as Page, label: "仪表盘", icon: LayoutDashboard },
   { id: "provider-pool" as Page, label: "凭证池", icon: Database },
-  { id: "clients" as Page, label: "AI Clients", icon: Monitor },
+  { id: "clients" as Page, label: "配置切换", icon: Monitor },
   { id: "api-server" as Page, label: "API Server", icon: Globe },
   { id: "mcp" as Page, label: "MCP", icon: Plug },
   { id: "prompts" as Page, label: "Prompts", icon: MessageSquare },

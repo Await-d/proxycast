@@ -211,6 +211,13 @@ async fn set_default_provider(
 
     let mut s = state.write().await;
     s.config.default_provider = provider.clone();
+
+    // 同时更新运行中服务器的 default_provider_ref
+    {
+        let mut dp = s.default_provider_ref.write().await;
+        *dp = provider.clone();
+    }
+
     config::save_config(&s.config).map_err(|e| e.to_string())?;
     logs.write()
         .await

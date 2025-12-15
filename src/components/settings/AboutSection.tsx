@@ -21,7 +21,7 @@ interface ToolVersion {
 
 export function AboutSection() {
   const [versionInfo] = useState<VersionInfo>({
-    current: "0.7.0",
+    current: "0.7.2",
     latest: undefined,
     hasUpdate: false,
   });
@@ -122,6 +122,33 @@ export function AboutSection() {
         </div>
       </div>
 
+      {/* 使用说明 Q&A */}
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium">使用说明</h3>
+        <div className="space-y-2">
+          <QAItem
+            question="ProxyCast 是什么？"
+            answer="ProxyCast 是一个本地 AI API 代理服务，可以将 Kiro、Gemini CLI 等工具的凭证转换为标准的 OpenAI/Anthropic API，供 Claude Code、Cherry Studio、Cursor 等工具使用。"
+          />
+          <QAItem
+            question="如何开始使用？"
+            answer="1. 在「凭证池」添加你的凭证（如 Kiro 凭证文件或 Claude API Key）；2. 在「API Server」启动服务并选择默认 Provider；3. 在你的 AI 工具中配置 API 地址为 http://localhost:8999"
+          />
+          <QAItem
+            question="什么是配置切换？"
+            answer="配置切换可以一键修改 Claude Code、Codex、Gemini CLI 的配置文件，快速在不同 Provider 间切换。添加 ProxyCast 配置后，这些工具就会使用本地代理服务。"
+          />
+          <QAItem
+            question="凭证文件在哪里？"
+            answer="Kiro 凭证：~/.kiro/kiro_creds.json；Gemini CLI 凭证：~/.gemini/oauth_creds.json；Qwen 凭证：~/.qwen-coder/auth.json"
+          />
+          <QAItem
+            question="支持哪些 AI 工具？"
+            answer="支持所有兼容 OpenAI API 或 Anthropic API 的工具，如 Claude Code、Cursor、Cherry Studio、Continue、Cline 等。"
+          />
+        </div>
+      </div>
+
       {/* 本地工具版本 */}
       <div className="space-y-3">
         <h3 className="text-sm font-medium">本地工具版本</h3>
@@ -169,6 +196,25 @@ function ToolVersionItem({ name, version }: { name: string; version: string }) {
           {version}
         </span>
       </div>
+    </div>
+  );
+}
+
+function QAItem({ question, answer }: { question: string; answer: string }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <div className="rounded-lg border">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/50"
+      >
+        <span className="text-sm font-medium">{question}</span>
+        <span className="text-muted-foreground">{isOpen ? "−" : "+"}</span>
+      </button>
+      {isOpen && (
+        <div className="px-3 pb-3 text-sm text-muted-foreground">{answer}</div>
+      )}
     </div>
   );
 }

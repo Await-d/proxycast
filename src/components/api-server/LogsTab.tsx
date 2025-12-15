@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from "react";
-import { Trash2, Download } from "lucide-react";
+import { Trash2, Download, ArrowUp } from "lucide-react";
 import { getLogs, clearLogs, LogEntry } from "@/hooks/useTauri";
 
 export function LogsTab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [showScrollTop, setShowScrollTop] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchLogs();
@@ -18,6 +20,19 @@ export function LogsTab() {
       logsEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [logs, autoScroll]);
+
+  const handleScroll = () => {
+    if (logsContainerRef.current) {
+      setShowScrollTop(logsContainerRef.current.scrollTop > 200);
+    }
+  };
+
+  const scrollToTop = () => {
+    if (logsContainerRef.current) {
+      logsContainerRef.current.scrollTo({ top: 0, behavior: "smooth" });
+      setAutoScroll(false);
+    }
+  };
 
   const fetchLogs = async () => {
     try {
@@ -107,8 +122,12 @@ export function LogsTab() {
         </button>
       </div>
 
-      <div className="rounded-lg border bg-card">
-        <div className="max-h-[600px] overflow-auto p-4 font-mono text-sm">
+      <div className="rounded-lg border bg-card relative">
+        <div
+          ref={logsContainerRef}
+          onScroll={handleScroll}
+          className="max-h-[600px] overflow-auto p-4 font-mono text-sm"
+        >
           {logs.length === 0 ? (
             <p className="text-center text-muted-foreground">
               暂无日志，启动服务后将显示请求日志
@@ -133,6 +152,15 @@ export function LogsTab() {
           )}
           <div ref={logsEndRef} />
         </div>
+        {showScrollTop && (
+          <button
+            onClick={scrollToTop}
+            className="absolute bottom-4 right-4 rounded-full bg-primary p-2 text-primary-foreground shadow-lg hover:bg-primary/90"
+            title="回到顶部"
+          >
+            <ArrowUp className="h-4 w-4" />
+          </button>
+        )}
       </div>
     </div>
   );

@@ -59,6 +59,7 @@ pub struct ServerState {
     pub qwen_provider: QwenProvider,
     pub openai_custom_provider: OpenAICustomProvider,
     pub claude_custom_provider: ClaudeCustomProvider,
+    pub default_provider_ref: Arc<RwLock<String>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
@@ -69,6 +70,7 @@ impl ServerState {
         let qwen = QwenProvider::new();
         let openai_custom = OpenAICustomProvider::new();
         let claude_custom = ClaudeCustomProvider::new();
+        let default_provider_ref = Arc::new(RwLock::new(config.default_provider.clone()));
 
         Self {
             config,
@@ -80,6 +82,7 @@ impl ServerState {
             qwen_provider: qwen,
             openai_custom_provider: openai_custom,
             claude_custom_provider: claude_custom,
+            default_provider_ref,
             shutdown_tx: None,
         }
     }
@@ -111,6 +114,7 @@ impl ServerState {
         let host = self.config.server.host.clone();
         let port = self.config.server.port;
         let api_key = self.config.server.api_key.clone();
+        let default_provider_ref = self.default_provider_ref.clone();
 
         // 重新加载凭证
         let _ = self.kiro_provider.load_credentials().await;
@@ -121,6 +125,7 @@ impl ServerState {
                 &host,
                 port,
                 &api_key,
+                default_provider_ref,
                 kiro,
                 logs,
                 rx,
@@ -163,6 +168,7 @@ impl Clone for KiroProvider {
 struct AppState {
     api_key: String,
     base_url: String,
+    default_provider: Arc<RwLock<String>>,
     kiro: Arc<RwLock<KiroProvider>>,
     logs: Arc<RwLock<LogStore>>,
     kiro_refresh_lock: Arc<tokio::sync::Mutex<()>>,
@@ -177,6 +183,7 @@ async fn run_server(
     host: &str,
     port: u16,
     api_key: &str,
+    default_provider: Arc<RwLock<String>>,
     kiro: KiroProvider,
     logs: Arc<RwLock<LogStore>>,
     shutdown: oneshot::Receiver<()>,
@@ -188,6 +195,7 @@ async fn run_server(
     let state = AppState {
         api_key: api_key.to_string(),
         base_url,
+        default_provider,
         kiro: Arc::new(RwLock::new(kiro)),
         logs,
         kiro_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -308,6 +316,42 @@ async fn chat_completions(
         &format!(
             "POST /v1/chat/completions model={} stream={}",
             request.model, request.stream
+        ),
+    );
+
+    // 获取当前默认 provider
+    let default_provider = state.default_provider.read().await.clone();
+
+    // 尝试从凭证池中选择凭证
+    let credential = match &state.db {
+        Some(db) => state
+            .pool_service
+            .select_credential(db, &default_provider, Some(&request.model))
+            .ok()
+            .flatten(),
+        None => None,
+    };
+
+    // 如果找到凭证池中的凭证，使用它
+    if let Some(cred) = credential {
+        state.logs.write().await.add(
+            "info",
+            &format!(
+                "[ROUTE] Using pool credential: type={} name={:?} uuid={}",
+                cred.provider_type,
+                cred.name,
+                &cred.uuid[..8]
+            ),
+        );
+        return call_provider_openai(&state, &cred, &request).await;
+    }
+
+    // 回退到旧的单凭证模式
+    state.logs.write().await.add(
+        "debug",
+        &format!(
+            "[ROUTE] No pool credential found for '{}', using legacy mode",
+            default_provider
         ),
     );
 
@@ -594,6 +638,45 @@ async fn anthropic_messages(
             ),
         );
     }
+
+    // 获取当前默认 provider
+    let default_provider = state.default_provider.read().await.clone();
+
+    // 尝试从凭证池中选择凭证
+    let credential = match &state.db {
+        Some(db) => {
+            // 根据 default_provider 配置选择凭证
+            state
+                .pool_service
+                .select_credential(db, &default_provider, Some(&request.model))
+                .ok()
+                .flatten()
+        }
+        None => None,
+    };
+
+    // 如果找到凭证池中的凭证，使用它
+    if let Some(cred) = credential {
+        state.logs.write().await.add(
+            "info",
+            &format!(
+                "[ROUTE] Using pool credential: type={} name={:?} uuid={}",
+                cred.provider_type,
+                cred.name,
+                &cred.uuid[..8]
+            ),
+        );
+        return call_provider_anthropic(&state, &cred, &request).await;
+    }
+
+    // 回退到旧的单凭证模式
+    state.logs.write().await.add(
+        "debug",
+        &format!(
+            "[ROUTE] No pool credential found for '{}', using legacy mode",
+            default_provider
+        ),
+    );
 
     // 检查是否需要刷新 token（无 token 或即将过期）
     {

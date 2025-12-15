@@ -11,6 +11,7 @@ import { AppType, Prompt } from "@/lib/api/prompts";
 import { usePrompts } from "@/hooks/usePrompts";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { HelpTip } from "@/components/HelpTip";
 
 const apps: { id: AppType; label: string; filename: string }[] = [
   { id: "claude", label: "Claude Code", filename: "CLAUDE.md" },
@@ -184,6 +185,19 @@ export function PromptsPage() {
           管理不同应用的系统提示词（{currentApp.filename}）
         </p>
       </div>
+
+      <HelpTip title="什么是 Prompts？" variant="amber">
+        <ul className="list-disc list-inside space-y-1 text-sm text-amber-700 dark:text-amber-400">
+          <li>Prompts 是 AI 工具的系统提示词，定义 AI 的行为和风格</li>
+          <li>
+            Claude Code 使用 CLAUDE.md，Codex 使用 AGENTS.md，Gemini 使用
+            GEMINI.md
+          </li>
+          <li>
+            可创建多个提示词模板，一键切换不同场景（如代码审查、文档编写等）
+          </li>
+        </ul>
+      </HelpTip>
 
       {/* App tabs */}
       <div className="flex gap-2 border-b pb-2 mb-4">

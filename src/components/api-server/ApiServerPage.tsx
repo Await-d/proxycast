@@ -12,9 +12,9 @@ import {
   Settings,
   RefreshCw,
 } from "lucide-react";
-import { ModelsTab } from "./ModelsTab";
 import { LogsTab } from "./LogsTab";
 import { RoutesTab } from "./RoutesTab";
+import { HelpTip } from "@/components/HelpTip";
 import {
   startServer,
   stopServer,
@@ -28,14 +28,8 @@ import {
   TestResult,
   getDefaultProvider,
   setDefaultProvider,
-  // OpenAI/Claude Custom
-  getOpenAICustomStatus,
-  setOpenAICustomConfig,
-  getClaudeCustomStatus,
-  setClaudeCustomConfig,
-  OpenAICustomStatus,
-  ClaudeCustomStatus,
 } from "@/hooks/useTauri";
+import { providerPoolApi, ProviderPoolOverview } from "@/lib/api/providerPool";
 
 interface TestState {
   endpoint: string;
@@ -45,7 +39,7 @@ interface TestState {
   httpStatus?: number;
 }
 
-type TabId = "server" | "routes" | "openai" | "claude" | "models" | "logs";
+type TabId = "server" | "routes" | "logs";
 
 export function ApiServerPage() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -62,24 +56,20 @@ export function ApiServerPage() {
   const [editApiKey, setEditApiKey] = useState<string>("");
   const [defaultProvider, setDefaultProviderState] = useState<string>("kiro");
 
-  // OpenAI Custom state
-  const [openaiStatus, setOpenaiStatus] = useState<OpenAICustomStatus | null>(
-    null,
-  );
-  const [openaiApiKey, setOpenaiApiKey] = useState("");
-  const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
-
-  // Claude Custom state
-  const [claudeStatus, setClaudeStatus] = useState<ClaudeCustomStatus | null>(
-    null,
-  );
-  const [claudeApiKey, setClaudeApiKey] = useState("");
-  const [claudeBaseUrl, setClaudeBaseUrl] = useState("");
-
   const [message, setMessage] = useState<{
     type: "success" | "error";
     text: string;
   } | null>(null);
+
+  // 自动清除消息
+  useEffect(() => {
+    if (message) {
+      const timer = setTimeout(() => {
+        setMessage(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [message]);
 
   const fetchStatus = async () => {
     try {
@@ -101,32 +91,10 @@ export function ApiServerPage() {
     }
   };
 
-  const loadOpenAICustomStatus = async () => {
-    try {
-      const status = await getOpenAICustomStatus();
-      setOpenaiStatus(status);
-      setOpenaiBaseUrl(status.base_url);
-    } catch (e) {
-      console.error("Failed to load OpenAI Custom status:", e);
-    }
-  };
-
-  const loadClaudeCustomStatus = async () => {
-    try {
-      const status = await getClaudeCustomStatus();
-      setClaudeStatus(status);
-      setClaudeBaseUrl(status.base_url);
-    } catch (e) {
-      console.error("Failed to load Claude Custom status:", e);
-    }
-  };
-
   useEffect(() => {
     fetchStatus();
     fetchConfig();
     loadDefaultProvider();
-    loadOpenAICustomStatus();
-    loadClaudeCustomStatus();
 
     const statusInterval = setInterval(fetchStatus, 3000);
     return () => clearInterval(statusInterval);
@@ -193,54 +161,67 @@ export function ApiServerPage() {
     setLoading(false);
   };
 
+  const providerLabels: Record<string, string> = {
+    kiro: "Kiro (AWS)",
+    gemini: "Gemini (Google)",
+    qwen: "Qwen (阿里)",
+    antigravity: "Antigravity (Gemini 3 Pro)",
+    openai: "OpenAI",
+    claude: "Claude (Anthropic)",
+  };
+
+  const [poolOverview, setPoolOverview] = useState<ProviderPoolOverview[]>([]);
+  const [providerSwitchMsg, setProviderSwitchMsg] = useState<string | null>(
+    null,
+  );
+
+  // 加载凭证池概览
+  const loadPoolOverview = async () => {
+    try {
+      const overview = await providerPoolApi.getOverview();
+      setPoolOverview(overview);
+    } catch (e) {
+      console.error("Failed to load pool overview:", e);
+    }
+  };
+
+  useEffect(() => {
+    loadPoolOverview();
+  }, []);
+
+  // 自动清除 provider 切换提示
+  useEffect(() => {
+    if (providerSwitchMsg) {
+      const timer = setTimeout(() => setProviderSwitchMsg(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [providerSwitchMsg]);
+
   const handleSetDefaultProvider = async (providerId: string) => {
-    setLoading(true);
     try {
       await setDefaultProvider(providerId);
       setDefaultProviderState(providerId);
-      setMessage({
-        type: "success",
-        text: `默认 Provider 已切换为: ${providerId}`,
-      });
-    } catch (e: unknown) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      setMessage({ type: "error", text: `切换失败: ${errMsg}` });
-    }
-    setLoading(false);
-  };
 
-  const handleSaveOpenAIConfig = async () => {
-    setLoading(true);
-    try {
-      await setOpenAICustomConfig(
-        openaiApiKey || null,
-        openaiBaseUrl || null,
-        true,
-      );
-      await loadOpenAICustomStatus();
-      setMessage({ type: "success", text: "OpenAI 配置已保存" });
-    } catch (e: unknown) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      setMessage({ type: "error", text: `保存失败: ${errMsg}` });
-    }
-    setLoading(false);
-  };
+      // 获取最新的凭证池数据
+      const freshOverview = await providerPoolApi.getOverview();
+      setPoolOverview(freshOverview);
 
-  const handleSaveClaudeConfig = async () => {
-    setLoading(true);
-    try {
-      await setClaudeCustomConfig(
-        claudeApiKey || null,
-        claudeBaseUrl || null,
-        true,
+      // 获取该类型下的凭证数量
+      const typeOverview = freshOverview.find(
+        (o) => o.provider_type === providerId,
       );
-      await loadClaudeCustomStatus();
-      setMessage({ type: "success", text: "Claude 配置已保存" });
+      const credCount = typeOverview?.stats.total || 0;
+      const healthyCount = typeOverview?.stats.healthy || 0;
+      const label = providerLabels[providerId] || providerId;
+
+      setProviderSwitchMsg(
+        `已切换到 ${label}` +
+          (credCount > 0 ? `（${healthyCount}/${credCount} 可用）` : ""),
+      );
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      setMessage({ type: "error", text: `保存失败: ${errMsg}` });
+      setProviderSwitchMsg(`切换失败: ${errMsg}`);
     }
-    setLoading(false);
   };
 
   const formatUptime = (secs: number) => {
@@ -385,9 +366,32 @@ export function ApiServerPage() {
       <div>
         <h2 className="text-2xl font-bold">API Server</h2>
         <p className="text-muted-foreground">
-          管理代理 API 服务器和自定义 API 配置
+          本地代理服务器，将凭证池中的凭证转换为标准 API
         </p>
       </div>
+
+      <HelpTip title="如何使用 API Server？" variant="green">
+        <ul className="list-disc list-inside space-y-1 text-sm text-green-700 dark:text-green-400">
+          <li>
+            启动服务后，API 地址为{" "}
+            <code className="px-1 py-0.5 rounded bg-green-100 dark:bg-green-900">
+              http://localhost:8999
+            </code>
+          </li>
+          <li>
+            支持 OpenAI 格式{" "}
+            <code className="px-1 py-0.5 rounded bg-green-100 dark:bg-green-900">
+              /v1/chat/completions
+            </code>{" "}
+            和 Anthropic 格式{" "}
+            <code className="px-1 py-0.5 rounded bg-green-100 dark:bg-green-900">
+              /v1/messages
+            </code>
+          </li>
+          <li>在下方选择"默认 Provider"，请求会自动使用该类型凭证池中的凭证</li>
+          <li>可在 Claude Code、Cherry Studio、Cursor 等工具中配置使用</li>
+        </ul>
+      </HelpTip>
 
       {message && (
         <div
@@ -455,9 +459,6 @@ export function ApiServerPage() {
         {[
           { id: "server" as TabId, name: "服务器控制" },
           { id: "routes" as TabId, name: "路由端点" },
-          { id: "openai" as TabId, name: "OpenAI 自定义" },
-          { id: "claude" as TabId, name: "Claude 自定义" },
-          { id: "models" as TabId, name: "可用模型" },
           { id: "logs" as TabId, name: "日志" },
         ].map((tab) => (
           <button
@@ -485,18 +486,19 @@ export function ApiServerPage() {
             </h3>
             <div className="flex items-center gap-4 mb-4">
               <button
-                className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
-                onClick={handleStart}
-                disabled={loading || status?.running}
+                className={`rounded-lg px-6 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+                  status?.running
+                    ? "bg-red-600 hover:bg-red-700"
+                    : "bg-green-600 hover:bg-green-700"
+                }`}
+                onClick={status?.running ? handleStop : handleStart}
+                disabled={loading}
               >
-                {loading ? "处理中..." : "启动服务"}
-              </button>
-              <button
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
-                onClick={handleStop}
-                disabled={loading || !status?.running}
-              >
-                停止服务
+                {loading
+                  ? "处理中..."
+                  : status?.running
+                    ? "停止服务"
+                    : "启动服务"}
               </button>
             </div>
 
@@ -541,30 +543,101 @@ export function ApiServerPage() {
           {/* Default Provider */}
           <div className="rounded-lg border bg-card p-6">
             <h3 className="mb-4 font-semibold">默认 Provider</h3>
+            <p className="mb-3 text-xs text-muted-foreground">
+              选择默认使用的凭证池类型，请求会自动从该类型的凭证池中轮询选择可用凭证
+            </p>
+            {providerSwitchMsg && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-green-500 bg-green-50 p-2 text-sm text-green-700 dark:bg-green-950/30">
+                <Check className="h-4 w-4" />
+                {providerSwitchMsg}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
-              {["kiro", "gemini", "qwen", "openai", "claude"].map((p) => (
-                <button
-                  key={p}
-                  onClick={() => handleSetDefaultProvider(p)}
-                  disabled={loading}
-                  className={`rounded-lg px-4 py-2 text-sm font-medium ${
-                    defaultProvider === p
-                      ? "bg-primary text-primary-foreground"
-                      : "border hover:bg-muted"
-                  } disabled:opacity-50`}
-                >
-                  {p === "kiro"
-                    ? "Kiro Claude"
-                    : p === "gemini"
-                      ? "Gemini CLI"
-                      : p === "qwen"
-                        ? "通义千问"
-                        : p === "openai"
-                          ? "OpenAI 自定义"
-                          : "Claude 自定义"}
-                </button>
-              ))}
+              {(
+                [
+                  { id: "kiro", label: "Kiro (AWS)" },
+                  { id: "gemini", label: "Gemini (Google)" },
+                  { id: "qwen", label: "Qwen (阿里)" },
+                  { id: "antigravity", label: "Antigravity (Gemini 3 Pro)" },
+                  { id: "openai", label: "OpenAI" },
+                  { id: "claude", label: "Claude (Anthropic)" },
+                ] as const
+              ).map((p) => {
+                const overview = poolOverview.find(
+                  (o) => o.provider_type === p.id,
+                );
+                const count = overview?.stats.total || 0;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => handleSetDefaultProvider(p.id)}
+                    disabled={loading}
+                    className={`rounded-lg px-4 py-2 text-sm font-medium ${
+                      defaultProvider === p.id
+                        ? "bg-primary text-primary-foreground"
+                        : "border hover:bg-muted"
+                    } disabled:opacity-50`}
+                  >
+                    {p.label}
+                    {count > 0 && (
+                      <span className="ml-1 text-xs opacity-70">({count})</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
+
+            {/* 当前选中类型的凭证列表 */}
+            {(() => {
+              const currentOverview = poolOverview.find(
+                (o) => o.provider_type === defaultProvider,
+              );
+              const credentials = currentOverview?.credentials || [];
+              if (credentials.length === 0) {
+                return (
+                  <div className="mt-4 rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+                    当前类型无可用凭证，请先在凭证池中添加
+                  </div>
+                );
+              }
+              return (
+                <div className="mt-4 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    当前可用凭证 ({credentials.length}):
+                  </p>
+                  <div className="space-y-1">
+                    {credentials.map((cred) => (
+                      <div
+                        key={cred.uuid}
+                        className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm ${
+                          cred.is_healthy
+                            ? "border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950"
+                            : cred.is_disabled
+                              ? "border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900"
+                              : "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`h-2 w-2 rounded-full ${
+                              cred.is_healthy
+                                ? "bg-green-500"
+                                : cred.is_disabled
+                                  ? "bg-gray-400"
+                                  : "bg-red-500"
+                            }`}
+                          />
+                          <span>{cred.name || cred.uuid.slice(0, 8)}</span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          使用 {cred.usage_count} 次
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* API Testing */}
@@ -695,115 +768,6 @@ export function ApiServerPage() {
 
       {/* Routes Tab */}
       {activeTab === "routes" && <RoutesTab />}
-
-      {/* OpenAI Custom Tab */}
-      {activeTab === "openai" && (
-        <div className="rounded-lg border bg-card p-6">
-          <h3 className="mb-4 font-semibold">OpenAI 自定义 API 配置</h3>
-          <p className="text-sm text-muted-foreground mb-4">
-            配置自定义 OpenAI 兼容 API 端点，用于转发请求到其他 OpenAI 兼容服务
-          </p>
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-muted-foreground mb-1">
-                API Key
-              </label>
-              <input
-                type="password"
-                value={openaiApiKey}
-                onChange={(e) => setOpenaiApiKey(e.target.value)}
-                placeholder="sk-..."
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-muted-foreground mb-1">
-                Base URL
-              </label>
-              <input
-                type="text"
-                value={openaiBaseUrl}
-                onChange={(e) => setOpenaiBaseUrl(e.target.value)}
-                placeholder="https://api.openai.com/v1"
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
-              />
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">状态:</span>
-              <span
-                className={
-                  openaiStatus?.has_api_key ? "text-green-600" : "text-red-500"
-                }
-              >
-                {openaiStatus?.has_api_key ? "已配置" : "未配置"}
-              </span>
-            </div>
-            <button
-              onClick={handleSaveOpenAIConfig}
-              disabled={loading}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              {loading ? "保存中..." : "保存配置"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Claude Custom Tab */}
-      {activeTab === "claude" && (
-        <div className="rounded-lg border bg-card p-6">
-          <h3 className="mb-4 font-semibold">Claude 自定义 API 配置</h3>
-          <p className="text-sm text-muted-foreground mb-4">
-            配置自定义 Claude API 端点，用于直接调用 Anthropic API
-          </p>
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-muted-foreground mb-1">
-                API Key
-              </label>
-              <input
-                type="password"
-                value={claudeApiKey}
-                onChange={(e) => setClaudeApiKey(e.target.value)}
-                placeholder="sk-ant-..."
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-muted-foreground mb-1">
-                Base URL
-              </label>
-              <input
-                type="text"
-                value={claudeBaseUrl}
-                onChange={(e) => setClaudeBaseUrl(e.target.value)}
-                placeholder="https://api.anthropic.com"
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
-              />
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">状态:</span>
-              <span
-                className={
-                  claudeStatus?.has_api_key ? "text-green-600" : "text-red-500"
-                }
-              >
-                {claudeStatus?.has_api_key ? "已配置" : "未配置"}
-              </span>
-            </div>
-            <button
-              onClick={handleSaveClaudeConfig}
-              disabled={loading}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              {loading ? "保存中..." : "保存配置"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Models Tab */}
-      {activeTab === "models" && <ModelsTab />}
 
       {/* Logs Tab */}
       {activeTab === "logs" && <LogsTab />}

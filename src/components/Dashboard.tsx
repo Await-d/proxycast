@@ -144,8 +144,8 @@ export function Dashboard() {
         />
         <QuickLinkCard
           icon={Monitor}
-          title="AI Clients"
-          description="配置 Claude Code/Codex/Gemini CLI"
+          title="配置切换"
+          description="一键切换 Claude Code/Codex/Gemini CLI 的 API 配置"
           status="info"
           statusText="管理 Provider 配置"
         />

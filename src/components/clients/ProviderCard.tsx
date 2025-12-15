@@ -79,6 +79,11 @@ export function ProviderCard({
         </div>
       </div>
 
+      {provider.category === "custom" && provider.name === "ProxyCast" && (
+        <p className="mt-2 text-xs text-blue-600 dark:text-blue-400">
+          本地代理服务，将凭证池中的凭证转换为标准 API
+        </p>
+      )}
       {provider.notes && (
         <p className="mt-2 text-sm text-muted-foreground line-clamp-2">
           {provider.notes}

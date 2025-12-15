@@ -3,6 +3,7 @@ import { RefreshCw, Search, Settings } from "lucide-react";
 import { useSkills } from "@/hooks/useSkills";
 import { SkillCard } from "./SkillCard";
 import { RepoManagerPanel } from "./RepoManagerPanel";
+import { HelpTip } from "@/components/HelpTip";
 import type { AppType } from "@/lib/api/skills";
 
 interface SkillsPageProps {
@@ -94,7 +95,9 @@ export const SkillsPage = forwardRef<SkillsPageRef, SkillsPageProps>(
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-2xl font-bold">Skills</h2>
-            <p className="text-muted-foreground">浏览和安装 Claude Skills</p>
+            <p className="text-muted-foreground">
+              浏览和安装 Claude Code Skills
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -116,6 +119,14 @@ export const SkillsPage = forwardRef<SkillsPageRef, SkillsPageProps>(
             </button>
           </div>
         </div>
+
+        <HelpTip title="什么是 Skills？" variant="green">
+          <ul className="list-disc list-inside space-y-1 text-sm text-green-700 dark:text-green-400">
+            <li>Skills 是 Claude Code 的扩展功能包，提供特定领域的专业能力</li>
+            <li>安装后会自动添加到 Claude Code 的 skills 目录</li>
+            <li>可通过"仓库管理"添加自定义 Skills 仓库</li>
+          </ul>
+        </HelpTip>
 
         {error && (
           <div className="rounded-lg border border-red-500 bg-red-50 p-4 text-red-700 dark:bg-red-950/30">
