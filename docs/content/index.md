@@ -67,7 +67,7 @@ navigation: false
 
 ### 1. 下载安装
 
-从 [GitHub Releases](https://github.com/aiclientproxy/proxycast/releases) 下载适合你系统的安装包。
+从 [GitHub Tags](https://github.com/aiclientproxy/proxycast/tags) 下载适合你系统的安装包。
 
 ### 2. 加载凭证
 
