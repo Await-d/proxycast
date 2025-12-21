@@ -683,7 +683,7 @@ impl CodexProvider {
     /// * `Err` - If no credentials are available
     ///
     /// # Examples
-    /// ```no_run
+    /// ```ignore
     /// // API Key mode
     /// provider.credentials.api_key = Some("sk-test".to_string());
     /// let token = provider.refresh_token().await?; // Returns "sk-test"

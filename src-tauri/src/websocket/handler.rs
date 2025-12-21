@@ -126,6 +126,22 @@ async fn handle_socket(socket: WebSocket, state: WsHandlerState, client_info: Op
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
+                // P1 安全修复：限制消息大小防止 DoS
+                const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+                if text.len() > MAX_MESSAGE_SIZE {
+                    state.manager.on_error();
+                    let error = WsMessage::Error(WsError::invalid_message(format!(
+                        "Message too large: {} bytes (max: {} bytes)",
+                        text.len(),
+                        MAX_MESSAGE_SIZE
+                    )));
+                    let error_text = serde_json::to_string(&error).unwrap_or_default();
+                    if sender.send(Message::Text(error_text.into())).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+
                 state.manager.on_message();
                 state.manager.increment_request_count(&conn_id);
 

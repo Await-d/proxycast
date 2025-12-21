@@ -206,11 +206,12 @@ pub async fn refresh_oauth_token(
     };
 
     match result {
-        Ok(token) => {
+        Ok(_token) => {
             logs.write()
                 .await
                 .add("info", &format!("[{display_name}] Token 刷新成功"));
-            Ok(token)
+            // P0 安全修复：不返回明文 token
+            Ok("Token 刷新成功".to_string())
         }
         Err(e) => {
             logs.write()
@@ -234,31 +235,32 @@ pub async fn get_oauth_env_variables(
     match provider_type {
         OAuthProvider::Kiro => {
             let creds = &s.kiro_provider.credentials;
+            // P0 安全修复：不返回明文敏感凭证
             if let Some(token) = &creds.access_token {
                 vars.push(EnvVariable {
                     key: "KIRO_ACCESS_TOKEN".to_string(),
-                    value: token.clone(),
+                    value: String::new(),
                     masked: mask_token(token),
                 });
             }
             if let Some(token) = &creds.refresh_token {
                 vars.push(EnvVariable {
                     key: "KIRO_REFRESH_TOKEN".to_string(),
-                    value: token.clone(),
+                    value: String::new(),
                     masked: mask_token(token),
                 });
             }
             if let Some(id) = &creds.client_id {
                 vars.push(EnvVariable {
                     key: "KIRO_CLIENT_ID".to_string(),
-                    value: id.clone(),
+                    value: String::new(),
                     masked: mask_token(id),
                 });
             }
             if let Some(secret) = &creds.client_secret {
                 vars.push(EnvVariable {
                     key: "KIRO_CLIENT_SECRET".to_string(),
-                    value: secret.clone(),
+                    value: String::new(),
                     masked: mask_token(secret),
                 });
             }
@@ -286,17 +288,18 @@ pub async fn get_oauth_env_variables(
         }
         OAuthProvider::Gemini => {
             let creds = &s.gemini_provider.credentials;
+            // P0 安全修复：不返回明文敏感凭证
             if let Some(token) = &creds.access_token {
                 vars.push(EnvVariable {
                     key: "GEMINI_ACCESS_TOKEN".to_string(),
-                    value: token.clone(),
+                    value: String::new(),
                     masked: mask_token(token),
                 });
             }
             if let Some(token) = &creds.refresh_token {
                 vars.push(EnvVariable {
                     key: "GEMINI_REFRESH_TOKEN".to_string(),
-                    value: token.clone(),
+                    value: String::new(),
                     masked: mask_token(token),
                 });
             }
@@ -311,17 +314,18 @@ pub async fn get_oauth_env_variables(
         }
         OAuthProvider::Qwen => {
             let creds = &s.qwen_provider.credentials;
+            // P0 安全修复：不返回明文敏感凭证
             if let Some(token) = &creds.access_token {
                 vars.push(EnvVariable {
                     key: "QWEN_ACCESS_TOKEN".to_string(),
-                    value: token.clone(),
+                    value: String::new(),
                     masked: mask_token(token),
                 });
             }
             if let Some(token) = &creds.refresh_token {
                 vars.push(EnvVariable {
                     key: "QWEN_REFRESH_TOKEN".to_string(),
-                    value: token.clone(),
+                    value: String::new(),
                     masked: mask_token(token),
                 });
             }

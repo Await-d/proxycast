@@ -855,6 +855,8 @@ pub fn get_pool_credential_oauth_status(
 }
 
 /// 调试 Kiro 凭证加载（从默认路径）
+/// P0 安全修复：仅在 debug 构建中可用
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn debug_kiro_credentials() -> Result<String, String> {
     use crate::providers::kiro::KiroProvider;
@@ -884,31 +886,15 @@ pub async fn debug_kiro_credentials() -> Result<String, String> {
                 provider.credentials.client_id_hash.is_some()
             ));
 
-            if let Some(hash) = &provider.credentials.client_id_hash {
-                result.push_str(&format!("🔗 clientIdHash: {}\n", hash));
-            }
-
+            // P0 安全修复：不再输出敏感信息（clientIdHash、token 前缀等）
             let detected_method = provider.detect_auth_method();
             result.push_str(&format!("🎯 检测到的认证方式: {}\n", detected_method));
-
-            let refresh_url = provider.get_refresh_url();
-            result.push_str(&format!("🌐 刷新端点: {}\n", refresh_url));
-
-            if let Some(client_id) = &provider.credentials.client_id {
-                result.push_str(&format!(
-                    "🆔 client_id 前缀: {}...\n",
-                    &client_id[..std::cmp::min(20, client_id.len())]
-                ));
-            }
 
             result.push_str("\n🚀 尝试刷新 token...\n");
             match provider.refresh_token().await {
                 Ok(token) => {
                     result.push_str(&format!("✅ Token 刷新成功! Token 长度: {}\n", token.len()));
-                    result.push_str(&format!(
-                        "🎫 Token 前缀: {}...\n",
-                        &token[..std::cmp::min(50, token.len())]
-                    ));
+                    // 不再输出 token 前缀
                 }
                 Err(e) => {
                     result.push_str(&format!("❌ Token 刷新失败: {}\n", e));
@@ -923,7 +909,16 @@ pub async fn debug_kiro_credentials() -> Result<String, String> {
     Ok(result)
 }
 
+/// P0 安全修复：release 构建中禁用 debug 命令
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+pub async fn debug_kiro_credentials() -> Result<String, String> {
+    Err("此调试命令仅在开发构建中可用".to_string())
+}
+
 /// 测试用户上传的凭证文件
+/// P0 安全修复：仅在 debug 构建中可用，且不输出敏感信息
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn test_user_credentials() -> Result<String, String> {
     use crate::providers::kiro::KiroProvider;
@@ -938,7 +933,8 @@ pub async fn test_user_credentials() -> Result<String, String> {
             "Library/Application Support/proxycast/credentials/kiro_d8da9d58_1765757992_kiro.json",
         );
 
-    result.push_str(&format!("📂 用户凭证路径: {}\n", user_creds_path.display()));
+    // P0 安全修复：不输出完整路径，仅显示文件是否存在
+    result.push_str("📂 检查用户凭证文件...\n");
 
     // 检查文件是否存在
     if !user_creds_path.exists() {
@@ -960,88 +956,27 @@ pub async fn test_user_credentials() -> Result<String, String> {
                 Ok(json) => {
                     result.push_str("✅ JSON 格式有效\n");
 
-                    // 检查关键字段
+                    // 检查关键字段（仅显示是否存在，不显示值）
                     let has_access_token =
                         json.get("accessToken").and_then(|v| v.as_str()).is_some();
                     let has_refresh_token =
                         json.get("refreshToken").and_then(|v| v.as_str()).is_some();
                     let auth_method = json.get("authMethod").and_then(|v| v.as_str());
-                    let client_id_hash = json.get("clientIdHash").and_then(|v| v.as_str());
+                    let has_client_id_hash =
+                        json.get("clientIdHash").and_then(|v| v.as_str()).is_some();
                     let region = json.get("region").and_then(|v| v.as_str());
 
                     result.push_str(&format!("🔑 有 accessToken: {}\n", has_access_token));
                     result.push_str(&format!("🔄 有 refreshToken: {}\n", has_refresh_token));
                     result.push_str(&format!("📄 authMethod: {:?}\n", auth_method));
-                    result.push_str(&format!("🏷️ clientIdHash: {:?}\n", client_id_hash));
+                    // P0 安全修复：不输出 clientIdHash 值
+                    result.push_str(&format!("🏷️ 有 clientIdHash: {}\n", has_client_id_hash));
                     result.push_str(&format!("🌍 region: {:?}\n", region));
 
-                    if let Some(hash) = client_id_hash {
-                        // 检查 clientIdHash 对应的文件
-                        let hash_file_path = dirs::home_dir()
-                            .unwrap()
-                            .join(".aws/sso/cache")
-                            .join(format!("{}.json", hash));
-
-                        result.push_str(&format!(
-                            "\n🔗 检查 clientIdHash 文件: {}\n",
-                            hash_file_path.display()
-                        ));
-
-                        if hash_file_path.exists() {
-                            result.push_str("✅ clientIdHash 文件存在\n");
-
-                            match std::fs::read_to_string(&hash_file_path) {
-                                Ok(hash_content) => {
-                                    match serde_json::from_str::<serde_json::Value>(&hash_content) {
-                                        Ok(hash_json) => {
-                                            let has_client_id = hash_json
-                                                .get("clientId")
-                                                .and_then(|v| v.as_str())
-                                                .is_some();
-                                            let has_client_secret = hash_json
-                                                .get("clientSecret")
-                                                .and_then(|v| v.as_str())
-                                                .is_some();
-
-                                            result.push_str(&format!(
-                                                "🆔 hash 文件有 clientId: {}\n",
-                                                has_client_id
-                                            ));
-                                            result.push_str(&format!(
-                                                "🔒 hash 文件有 clientSecret: {}\n",
-                                                has_client_secret
-                                            ));
-
-                                            if has_client_id && has_client_secret {
-                                                result.push_str("✅ IdC 认证配置完整!\n");
-                                            } else {
-                                                result.push_str(
-                                                    "⚠️ IdC 认证配置不完整，将使用 social 认证\n",
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            result.push_str(&format!(
-                                                "❌ 无法解析 hash 文件 JSON: {}\n",
-                                                e
-                                            ));
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    result.push_str(&format!("❌ 无法读取 hash 文件: {}\n", e));
-                                }
-                            }
-                        } else {
-                            result.push_str("❌ clientIdHash 文件不存在\n");
-                        }
-                    }
-
-                    // 现在使用我们的 KiroProvider 来测试加载
+                    // 使用 KiroProvider 测试加载
                     result.push_str("\n🔧 使用 KiroProvider 测试加载...\n");
 
                     let mut provider = KiroProvider::new();
-                    // 设置凭证路径到用户文件
                     provider.creds_path = Some(user_creds_path.clone());
 
                     match provider
@@ -1066,9 +1001,6 @@ pub async fn test_user_credentials() -> Result<String, String> {
                             let detected_method = provider.detect_auth_method();
                             result.push_str(&format!("🎯 检测到的认证方式: {}\n", detected_method));
 
-                            let refresh_url = provider.get_refresh_url();
-                            result.push_str(&format!("🌐 刷新端点: {}\n", refresh_url));
-
                             result.push_str("\n🚀 尝试刷新 token...\n");
                             match provider.refresh_token().await {
                                 Ok(token) => {
@@ -1076,10 +1008,7 @@ pub async fn test_user_credentials() -> Result<String, String> {
                                         "✅ Token 刷新成功! Token 长度: {}\n",
                                         token.len()
                                     ));
-                                    result.push_str(&format!(
-                                        "🎫 Token 前缀: {}...\n",
-                                        &token[..std::cmp::min(50, token.len())]
-                                    ));
+                                    // P0 安全修复：不输出 token 前缀
                                 }
                                 Err(e) => {
                                     result.push_str(&format!("❌ Token 刷新失败: {}\n", e));
@@ -1102,6 +1031,13 @@ pub async fn test_user_credentials() -> Result<String, String> {
     }
 
     Ok(result)
+}
+
+/// P0 安全修复：release 构建中禁用 test_user_credentials 命令
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+pub async fn test_user_credentials() -> Result<String, String> {
+    Err("此调试命令仅在开发构建中可用".to_string())
 }
 
 /// 迁移 Private 配置到凭证池

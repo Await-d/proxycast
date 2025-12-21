@@ -237,6 +237,20 @@ async fn save_config(
     state: tauri::State<'_, AppState>,
     config: config::Config,
 ) -> Result<(), String> {
+    // P0 安全修复：禁止危险的网络配置
+    let host = config.server.host.to_lowercase();
+    if host == "0.0.0.0" || host == "::" {
+        return Err(
+            "安全限制：不允许监听所有网络接口 (0.0.0.0 或 ::)。请使用 127.0.0.1 或 localhost"
+                .to_string(),
+        );
+    }
+
+    // 禁止开启远程管理
+    if config.remote_management.allow_remote {
+        return Err("安全限制：不允许开启远程管理功能".to_string());
+    }
+
     let mut s = state.write().await;
     s.config = config.clone();
     config::save_config(&config).map_err(|e| e.to_string())
@@ -356,31 +370,32 @@ async fn get_env_variables(state: tauri::State<'_, AppState>) -> Result<Vec<EnvV
     let creds = &s.kiro_provider.credentials;
     let mut vars = Vec::new();
 
+    // P0 安全修复：不再返回明文敏感凭证，仅返回 masked 版本
     if let Some(token) = &creds.access_token {
         vars.push(EnvVariable {
             key: "KIRO_ACCESS_TOKEN".to_string(),
-            value: token.clone(),
+            value: String::new(), // 不返回明文
             masked: mask_token(token),
         });
     }
     if let Some(token) = &creds.refresh_token {
         vars.push(EnvVariable {
             key: "KIRO_REFRESH_TOKEN".to_string(),
-            value: token.clone(),
+            value: String::new(), // 不返回明文
             masked: mask_token(token),
         });
     }
     if let Some(id) = &creds.client_id {
         vars.push(EnvVariable {
             key: "KIRO_CLIENT_ID".to_string(),
-            value: id.clone(),
+            value: String::new(), // 不返回明文
             masked: mask_token(id),
         });
     }
     if let Some(secret) = &creds.client_secret {
         vars.push(EnvVariable {
             key: "KIRO_CLIENT_SECRET".to_string(),
-            value: secret.clone(),
+            value: String::new(), // 不返回明文
             masked: mask_token(secret),
         });
     }

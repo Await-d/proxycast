@@ -8,6 +8,7 @@ use crate::middleware::management_auth::{
 };
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, Response, StatusCode},
 };
 use proptest::prelude::*;
@@ -136,14 +137,18 @@ fn test_management_auth_rate_limit_after_failures() {
 
     // 使用唯一的 IP 地址避免测试间干扰
     let client_ip = format!("203.0.113.{}", std::process::id() % 256);
+    let addr: SocketAddr = format!("{}:12345", client_ip).parse().unwrap();
+
     for _ in 0..5 {
-        let req =
-            create_request_with_management_key_and_forwarded(Some("invalid"), Some(&client_ip));
+        let mut req = create_request_with_management_key(Some("invalid"));
+        // 安全修复后不再信任 X-Forwarded-For，需要注入 ConnectInfo
+        req.extensions_mut().insert(ConnectInfo(addr));
         let response = rt.block_on(async { service.call(req).await.unwrap() });
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    let req = create_request_with_management_key_and_forwarded(Some("invalid"), Some(&client_ip));
+    let mut req = create_request_with_management_key(Some("invalid"));
+    req.extensions_mut().insert(ConnectInfo(addr));
     let response = rt.block_on(async { service.call(req).await.unwrap() });
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 }

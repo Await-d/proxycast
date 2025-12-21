@@ -222,6 +222,11 @@ mod tests {
         let registry = Arc::new(RwLock::new(RouteRegistry::new()));
         let router = ProviderRouter::new(registry);
 
+        // 安全修复后，未注册的 selector 会返回 None，需要先注册
+        router
+            .register_credential("kiro", "uuid-selector-test", Some("my-kiro"))
+            .await;
+
         let match1 = router.resolve("/my-kiro/v1/messages").await.unwrap();
         assert_eq!(match1.protocol, "claude");
         assert_eq!(match1.selector, Some("my-kiro".to_string()));

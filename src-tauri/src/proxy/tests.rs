@@ -8,8 +8,8 @@ use proptest::prelude::*;
 /// 生成有效的 socks5 代理 URL
 fn arb_socks5_url() -> impl Strategy<Value = String> {
     (
-        "[a-z0-9]{1,20}",  // host
-        1024u16..65535u16, // port
+        "[a-z][a-z0-9]{0,19}", // host: 必须以字母开头
+        1024u16..65535u16,     // port
     )
         .prop_map(|(host, port)| format!("socks5://{}:{}", host, port))
 }
@@ -17,8 +17,8 @@ fn arb_socks5_url() -> impl Strategy<Value = String> {
 /// 生成有效的 http 代理 URL
 fn arb_http_url() -> impl Strategy<Value = String> {
     (
-        "[a-z0-9]{1,20}",  // host
-        1024u16..65535u16, // port
+        "[a-z][a-z0-9]{0,19}", // host: 必须以字母开头
+        1024u16..65535u16,     // port
     )
         .prop_map(|(host, port)| format!("http://{}:{}", host, port))
 }
@@ -26,8 +26,8 @@ fn arb_http_url() -> impl Strategy<Value = String> {
 /// 生成有效的 https 代理 URL
 fn arb_https_url() -> impl Strategy<Value = String> {
     (
-        "[a-z0-9]{1,20}",  // host
-        1024u16..65535u16, // port
+        "[a-z][a-z0-9]{0,19}", // host: 必须以字母开头
+        1024u16..65535u16,     // port
     )
         .prop_map(|(host, port)| format!("https://{}:{}", host, port))
 }

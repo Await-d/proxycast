@@ -263,14 +263,45 @@ impl LogStore {
 #[allow(dead_code)]
 pub type SharedLogStore = Arc<RwLock<LogStore>>;
 
-fn sanitize_log_message(message: &str) -> String {
+/// P2 安全修复：扩展日志脱敏规则，覆盖更多敏感字段
+pub fn sanitize_log_message(message: &str) -> String {
     let patterns = [
+        // Bearer token
         (r"Bearer\s+[A-Za-z0-9._-]+", "Bearer ***"),
+        // API key 各种格式
         (
             r#"api[_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9._-]+"#,
             "api_key: ***",
         ),
+        // 通用 token
         (r#"token["']?\s*[:=]\s*["']?[A-Za-z0-9._-]+"#, "token: ***"),
+        // P2 新增：access_token
+        (
+            r#"access[_-]?token["']?\s*[:=]\s*["']?[A-Za-z0-9._-]+"#,
+            "access_token: ***",
+        ),
+        // P2 新增：refresh_token
+        (
+            r#"refresh[_-]?token["']?\s*[:=]\s*["']?[A-Za-z0-9._-]+"#,
+            "refresh_token: ***",
+        ),
+        // P2 新增：client_secret
+        (
+            r#"client[_-]?secret["']?\s*[:=]\s*["']?[A-Za-z0-9._-]+"#,
+            "client_secret: ***",
+        ),
+        // P2 新增：authorization header
+        (
+            r#"[Aa]uthorization["']?\s*[:=]\s*["']?[A-Za-z0-9._\s-]+"#,
+            "authorization: ***",
+        ),
+        // P2 新增：password
+        (r#"password["']?\s*[:=]\s*["']?[^\s"',}]+"#, "password: ***"),
+        // P2 新增：secret
+        (
+            r#"secret["']?\s*[:=]\s*["']?[A-Za-z0-9._-]+"#,
+            "secret: ***",
+        ),
     ];
 
     let mut sanitized = message.to_string();
@@ -280,4 +311,65 @@ fn sanitize_log_message(message: &str) -> String {
         }
     }
     sanitized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_log_message;
+
+    #[test]
+    fn test_sanitize_bearer_token() {
+        let input = "Authorization: Bearer abcDEF123._-XYZ";
+        let output = sanitize_log_message(input);
+        // 验证敏感 token 被脱敏
+        assert!(!output.contains("abcDEF123"));
+        assert!(output.contains("***"));
+    }
+
+    #[test]
+    fn test_sanitize_api_key() {
+        let input = r#"request api_key="sk-test_123.456-ABC" end"#;
+        let output = sanitize_log_message(input);
+        assert!(output.contains("api_key: ***"));
+        assert!(!output.contains("sk-test_123"));
+    }
+
+    #[test]
+    fn test_sanitize_access_token() {
+        let input = "access_token=atk_12345";
+        let output = sanitize_log_message(input);
+        assert!(output.contains("access_token: ***"));
+        assert!(!output.contains("atk_12345"));
+    }
+
+    #[test]
+    fn test_sanitize_refresh_token() {
+        let input = "refresh_token: rtk_ABCDE-123";
+        let output = sanitize_log_message(input);
+        assert!(output.contains("refresh_token: ***"));
+        assert!(!output.contains("rtk_ABCDE"));
+    }
+
+    #[test]
+    fn test_sanitize_client_secret() {
+        let input = "client_secret = \"cs_SeCreT-999\"";
+        let output = sanitize_log_message(input);
+        assert!(output.contains("client_secret: ***"));
+        assert!(!output.contains("cs_SeCreT"));
+    }
+
+    #[test]
+    fn test_sanitize_password() {
+        let input = r#"{"password":"p@ssW0rd!"}"#;
+        let output = sanitize_log_message(input);
+        assert!(output.contains("password: ***"));
+        assert!(!output.contains("p@ssW0rd!"));
+    }
+
+    #[test]
+    fn test_plain_text_unchanged() {
+        let input = "这是一段普通日志，不包含任何敏感字段。";
+        let output = sanitize_log_message(input);
+        assert_eq!(output, input);
+    }
 }

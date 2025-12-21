@@ -2,6 +2,23 @@ use crate::models::{AppType, McpServer};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
+/// P0 安全修复：校验 TOML 键名是否合法（仅允许字母、数字、下划线和连字符）
+fn is_valid_toml_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// P0 安全修复：转义 TOML 字符串值中的特殊字符
+fn escape_toml_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 /// Get the MCP config file path for an app type
 #[allow(dead_code)]
 pub fn get_mcp_config_path(app_type: &AppType) -> Option<PathBuf> {
@@ -136,20 +153,30 @@ fn sync_mcp_to_codex(
 
     // Add new MCP server sections - use name as key
     for server in servers {
+        // P0 安全修复：校验 server.name 防止 TOML 注入
+        if !is_valid_toml_key(&server.name) {
+            tracing::warn!(
+                "[MCP Sync] 跳过无效的服务器名称: {} (仅允许字母、数字、下划线和连字符)",
+                server.name
+            );
+            continue;
+        }
+
         new_lines.push(String::new());
         new_lines.push(format!("[mcp_servers.{}]", server.name));
 
         if let Some(config) = server.server_config.as_object() {
             // Convert JSON config to TOML format
             if let Some(command) = config.get("command").and_then(|v| v.as_str()) {
-                new_lines.push(format!("command = \"{command}\""));
+                // P0 安全修复：转义 TOML 字符串值
+                new_lines.push(format!("command = \"{}\"", escape_toml_string(command)));
             }
 
             if let Some(args) = config.get("args").and_then(|v| v.as_array()) {
                 let args_str: Vec<String> = args
                     .iter()
                     .filter_map(|a| a.as_str())
-                    .map(|s| format!("\"{s}\""))
+                    .map(|s| format!("\"{}\"", escape_toml_string(s)))
                     .collect();
                 new_lines.push(format!("args = [{}]", args_str.join(", ")));
             }
@@ -157,8 +184,13 @@ fn sync_mcp_to_codex(
             if let Some(env) = config.get("env").and_then(|v| v.as_object()) {
                 new_lines.push("[mcp_servers.".to_string() + &server.name + ".env]");
                 for (key, value) in env {
+                    // P0 安全修复：校验 env key 并转义值
+                    if !is_valid_toml_key(key) {
+                        tracing::warn!("[MCP Sync] 跳过无效的环境变量名: {}", key);
+                        continue;
+                    }
                     if let Some(val) = value.as_str() {
-                        new_lines.push(format!("{key} = \"{val}\""));
+                        new_lines.push(format!("{} = \"{}\"", key, escape_toml_string(val)));
                     }
                 }
             }
@@ -530,5 +562,74 @@ pub fn import_mcp_from_app(
         AppType::Codex => import_mcp_from_codex(),
         AppType::Gemini => import_mcp_from_gemini(),
         AppType::ProxyCast => Ok(Vec::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escape_toml_string, is_valid_toml_key};
+
+    #[test]
+    fn test_valid_toml_key_accepts_alphanumeric() {
+        assert!(is_valid_toml_key("abc"));
+        assert!(is_valid_toml_key("ABC123"));
+        assert!(is_valid_toml_key("test_server"));
+        assert!(is_valid_toml_key("my-server"));
+        assert!(is_valid_toml_key("server_1-test"));
+    }
+
+    #[test]
+    fn test_valid_toml_key_rejects_invalid() {
+        // 含 ] 的注入尝试
+        assert!(!is_valid_toml_key("bad]"));
+        assert!(!is_valid_toml_key("bad]\n[evil]"));
+        // 含换行
+        assert!(!is_valid_toml_key("bad\nkey"));
+        // 含空格
+        assert!(!is_valid_toml_key("bad key"));
+        // 含点号
+        assert!(!is_valid_toml_key("bad.key"));
+        // 空字符串
+        assert!(!is_valid_toml_key(""));
+        // 含特殊字符
+        assert!(!is_valid_toml_key("bad=key"));
+        assert!(!is_valid_toml_key("bad[key"));
+    }
+
+    #[test]
+    fn test_escape_toml_string_backslash() {
+        assert_eq!(escape_toml_string(r"path\to\file"), r"path\\to\\file");
+    }
+
+    #[test]
+    fn test_escape_toml_string_quote() {
+        assert_eq!(escape_toml_string(r#"say "hello""#), r#"say \"hello\""#);
+    }
+
+    #[test]
+    fn test_escape_toml_string_newline() {
+        assert_eq!(escape_toml_string("line1\nline2"), r"line1\nline2");
+    }
+
+    #[test]
+    fn test_escape_toml_string_carriage_return() {
+        assert_eq!(escape_toml_string("line1\rline2"), r"line1\rline2");
+    }
+
+    #[test]
+    fn test_escape_toml_string_tab() {
+        assert_eq!(escape_toml_string("col1\tcol2"), r"col1\tcol2");
+    }
+
+    #[test]
+    fn test_escape_toml_string_combined() {
+        let input = "path\\to\\file\nwith \"quotes\"\tand\rtabs";
+        let output = escape_toml_string(input);
+        assert!(!output.contains('\n'));
+        assert!(!output.contains('\r'));
+        assert!(!output.contains('\t'));
+        assert!(output.contains("\\n"));
+        assert!(output.contains("\\r"));
+        assert!(output.contains("\\t"));
     }
 }

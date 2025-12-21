@@ -74,7 +74,8 @@ pub async fn get_route_curl_examples(
         }
     });
 
-    let api_key = &config.server.api_key;
+    // P0 安全修复：curl 示例使用占位符，不暴露真实 API Key
+    let api_key = "${PROXYCAST_API_KEY}";
 
     match route {
         Some(r) => Ok(r.generate_curl_examples(api_key)),

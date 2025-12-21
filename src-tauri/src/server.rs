@@ -823,8 +823,9 @@ async fn run_server(
         None
     };
 
-    // 设置请求体大小限制为 100MB，支持大型上下文请求（如 Claude Code 的 /compact 命令）
-    let body_limit = 100 * 1024 * 1024; // 100MB
+    // P1 安全修复：降低默认请求体大小限制，防止 DoS
+    // 从 100MB 降低到 20MB，对于需要更大请求的端点单独配置
+    let body_limit = 20 * 1024 * 1024; // 20MB
 
     // 创建管理 API 路由（带认证中间件）
     let management_config = config
@@ -2571,7 +2572,13 @@ fn parse_bracket_tool_calls(result: &mut CWParsedResponse) {
 }
 
 /// 列出所有可用路由
-async fn list_routes(State(state): State<AppState>) -> impl IntoResponse {
+/// P1 安全修复：添加 API Key 鉴权，防止信息泄露
+async fn list_routes(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // 验证 API Key
+    if let Err(e) = verify_api_key(&headers, &state.api_key).await {
+        return e.into_response();
+    }
+
     let routes = match &state.db {
         Some(db) => state
             .pool_service
@@ -2608,7 +2615,7 @@ async fn list_routes(State(state): State<AppState>) -> impl IntoResponse {
         routes: all_routes,
     };
 
-    Json(response)
+    Json(response).into_response()
 }
 
 /// 带选择器的 Anthropic messages 处理
@@ -3010,34 +3017,22 @@ async fn amp_management_proxy_internal(
             .into_response();
     }
 
+    // P0 安全修复：不信任任何请求头判断 localhost
+    // 此函数应该接收 ConnectInfo<SocketAddr> 来获取真实连接 IP
+    // 由于当前函数签名限制，暂时禁用基于头的 localhost 判断
     // 检查 localhost 限制
     if state.amp_router.restrict_management_to_localhost() {
-        // 从 headers 中获取客户端 IP
-        let client_ip = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
-            .or_else(|| {
-                headers
-                    .get("x-real-ip")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string())
-            });
-
-        if let Some(ip) = &client_ip {
-            let is_localhost = ip == "127.0.0.1" || ip == "::1" || ip == "localhost";
-            if !is_localhost {
-                state.logs.write().await.add(
-                    "warn",
-                    &format!("[AMP] Management proxy blocked from non-localhost: {}", ip),
-                );
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({"error": {"message": "Management endpoints are restricted to localhost"}})),
-                )
-                    .into_response();
-            }
-        }
+        // 安全警告：此处应使用 ConnectInfo<SocketAddr> 获取真实 IP
+        // 当前实现拒绝所有非本地请求，因为无法可靠验证来源
+        state.logs.write().await.add(
+            "warn",
+            "[AMP] Management proxy requires ConnectInfo for secure localhost verification",
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": {"message": "Management endpoints require secure localhost verification. Please access directly without proxy."}})),
+        )
+            .into_response();
     }
 
     // 获取上游 URL

@@ -53,6 +53,19 @@ impl BackupService {
     }
 
     pub fn restore_database(&self, backup_path: &Path) -> Result<(), String> {
+        // P1 安全修复：验证备份路径在白名单目录内
+        let canonical_backup = backup_path
+            .canonicalize()
+            .map_err(|e| format!("无法解析备份路径: {}", e))?;
+        let canonical_backup_dir = self
+            .backup_dir
+            .canonicalize()
+            .map_err(|e| format!("无法解析备份目录: {}", e))?;
+
+        if !canonical_backup.starts_with(&canonical_backup_dir) {
+            return Err("安全限制：只能从备份目录恢复数据库".to_string());
+        }
+
         if !backup_path.exists() {
             return Err("备份文件不存在".to_string());
         }
@@ -66,6 +79,19 @@ impl BackupService {
         db: &DbConnection,
         backup_path: &Path,
     ) -> Result<(), String> {
+        // P1 安全修复：验证备份路径在白名单目录内
+        let canonical_backup = backup_path
+            .canonicalize()
+            .map_err(|e| format!("无法解析备份路径: {}", e))?;
+        let canonical_backup_dir = self
+            .backup_dir
+            .canonicalize()
+            .map_err(|e| format!("无法解析备份目录: {}", e))?;
+
+        if !canonical_backup.starts_with(&canonical_backup_dir) {
+            return Err("安全限制：只能从备份目录恢复数据库".to_string());
+        }
+
         if !backup_path.exists() {
             return Err("备份文件不存在".to_string());
         }
