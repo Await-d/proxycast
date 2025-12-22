@@ -751,6 +751,8 @@ pub enum FlowErrorType {
     ModelUnavailable,
     /// Token 限制超出
     TokenLimitExceeded,
+    /// 请求被取消（用户拦截后取消）
+    Cancelled,
     /// 其他错误
     Other,
 }
@@ -1211,6 +1213,7 @@ mod property_tests {
                 | FlowErrorType::ContentFilter
                 | FlowErrorType::ModelUnavailable
                 | FlowErrorType::TokenLimitExceeded
+                | FlowErrorType::Cancelled
                 | FlowErrorType::Other => {
                     prop_assert!(!is_retryable, "{:?} 不应该是可重试的", error_type);
                 }

@@ -5,6 +5,7 @@ import type {
   FlowSummary,
   FlowUpdate,
   FlowError,
+  ThresholdCheckResult,
 } from "@/lib/api/flowMonitor";
 
 interface UseFlowEventsOptions {
@@ -15,6 +16,7 @@ interface UseFlowEventsOptions {
   onFlowUpdated?: (id: string, update: FlowUpdate) => void;
   onFlowCompleted?: (id: string, summary: FlowSummary) => void;
   onFlowFailed?: (id: string, error: FlowError) => void;
+  onThresholdWarning?: (id: string, result: ThresholdCheckResult) => void;
 }
 
 interface UseFlowEventsReturn {
@@ -32,6 +34,8 @@ interface UseFlowEventsReturn {
   lastEvent: FlowEvent | null;
   /** 活跃的 Flow 列表（正在进行中的） */
   activeFlows: Map<string, FlowSummary>;
+  /** 最近的阈值警告 */
+  lastThresholdWarning: { id: string; result: ThresholdCheckResult } | null;
 }
 
 /**
@@ -49,6 +53,7 @@ export function useFlowEvents(
     onFlowUpdated,
     onFlowCompleted,
     onFlowFailed,
+    onThresholdWarning,
   } = options;
 
   // 从全局管理器获取初始状态
@@ -63,12 +68,17 @@ export function useFlowEvents(
   const [activeFlows, setActiveFlows] = useState<Map<string, FlowSummary>>(
     initialState.activeFlows,
   );
+  const [lastThresholdWarning, setLastThresholdWarning] = useState<{
+    id: string;
+    result: ThresholdCheckResult;
+  } | null>(null);
 
   const callbacksRef = useRef({
     onFlowStarted,
     onFlowUpdated,
     onFlowCompleted,
     onFlowFailed,
+    onThresholdWarning,
   });
 
   // 更新回调引用
@@ -78,8 +88,15 @@ export function useFlowEvents(
       onFlowUpdated,
       onFlowCompleted,
       onFlowFailed,
+      onThresholdWarning,
     };
-  }, [onFlowStarted, onFlowUpdated, onFlowCompleted, onFlowFailed]);
+  }, [
+    onFlowStarted,
+    onFlowUpdated,
+    onFlowCompleted,
+    onFlowFailed,
+    onThresholdWarning,
+  ]);
 
   // 处理事件
   const handleEvent = useCallback((event: FlowEvent) => {
@@ -106,6 +123,11 @@ export function useFlowEvents(
           return next;
         });
         callbacksRef.current.onFlowUpdated?.(event.id, event.update);
+        break;
+
+      case "ThresholdWarning":
+        setLastThresholdWarning({ id: event.id, result: event.result });
+        callbacksRef.current.onThresholdWarning?.(event.id, event.result);
         break;
 
       case "FlowCompleted":
@@ -190,6 +212,7 @@ export function useFlowEvents(
     disconnect,
     lastEvent,
     activeFlows,
+    lastThresholdWarning,
   };
 }
 

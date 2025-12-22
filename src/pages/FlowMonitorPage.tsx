@@ -48,14 +48,6 @@ export function FlowMonitorPage() {
     setRefreshKey((prev) => prev + 1);
   }, []);
 
-  // 搜索
-  const handleSearch = useCallback((query: string) => {
-    setFilter((prev) => ({
-      ...prev,
-      content_search: query,
-    }));
-  }, []);
-
   // 导出单个 Flow
   const handleExportFlow = useCallback(
     (flowId: string, _format: ExportFormat) => {
@@ -148,11 +140,7 @@ export function FlowMonitorPage() {
       ) : (
         <>
           {/* 过滤器 */}
-          <FlowFilters
-            filter={filter}
-            onChange={setFilter}
-            onSearch={handleSearch}
-          />
+          <FlowFilters filter={filter} onChange={setFilter} />
 
           {/* 主内容区域 */}
           {viewMode === "list" ? (

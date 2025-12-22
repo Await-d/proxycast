@@ -7,11 +7,28 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 use super::file_store::{FileStoreError, FlowFileStore};
+use super::filter_parser::{FilterParseError, FilterParser};
 use super::memory_store::{FlowFilter, FlowMemoryStore};
 use super::models::{FlowState, LLMFlow};
+
+// ============================================================================
+// 错误类型
+// ============================================================================
+
+/// 使用过滤表达式查询时的错误
+#[derive(Debug, Error)]
+pub enum QueryWithExpressionError {
+    /// 过滤表达式解析错误
+    #[error("过滤表达式解析错误: {0}")]
+    ParseError(#[from] FilterParseError),
+    /// 文件存储错误
+    #[error("文件存储错误: {0}")]
+    FileStoreError(#[from] FileStoreError),
+}
 
 // ============================================================================
 // 排序选项
@@ -258,6 +275,103 @@ impl FlowQueryService {
         })
     }
 
+    /// 使用过滤表达式查询 Flow
+    ///
+    /// 支持类似 mitmproxy 的过滤表达式语法，如：
+    /// - `~m claude` - 模型名称包含 "claude"
+    /// - `~p kiro & ~m claude` - 提供商为 kiro 且模型包含 claude
+    /// - `~e | ~latency >5s` - 有错误或延迟超过 5 秒
+    ///
+    /// # 参数
+    /// - `filter_expr`: 过滤表达式字符串
+    /// - `sort_by`: 排序字段
+    /// - `sort_desc`: 是否降序
+    /// - `page`: 页码（从 1 开始）
+    /// - `page_size`: 每页大小
+    ///
+    /// # 返回
+    /// - `Ok(FlowQueryResult)` - 查询结果
+    /// - `Err(QueryWithExpressionError)` - 解析或查询错误
+    pub async fn query_with_expression(
+        &self,
+        filter_expr: &str,
+        sort_by: FlowSortBy,
+        sort_desc: bool,
+        page: usize,
+        page_size: usize,
+    ) -> Result<FlowQueryResult, QueryWithExpressionError> {
+        // 解析过滤表达式
+        let expr = FilterParser::parse(filter_expr)?;
+
+        // 编译为过滤函数
+        let filter_fn = FilterParser::compile(&expr);
+
+        // 从内存获取所有 Flow 并应用过滤
+        let memory_flows = {
+            let store = self.memory_store.read().await;
+            let all_flows = store.query(&FlowFilter::default());
+            all_flows
+                .into_iter()
+                .filter(|f| filter_fn(f))
+                .collect::<Vec<_>>()
+        };
+
+        let mut all_flows = memory_flows;
+
+        // 如果内存数据不足，从文件补充
+        let memory_count = all_flows.len();
+        let needed = page * page_size;
+
+        if memory_count < needed {
+            // 从文件存储获取更多数据
+            let file_flows = self
+                .file_store
+                .query(&FlowFilter::default(), needed * 2, 0)?;
+
+            // 合并并去重（以 ID 为准），同时应用过滤
+            let memory_ids: std::collections::HashSet<_> =
+                all_flows.iter().map(|f| f.id.clone()).collect();
+
+            for flow in file_flows {
+                if !memory_ids.contains(&flow.id) && filter_fn(&flow) {
+                    all_flows.push(flow);
+                }
+            }
+        }
+
+        // 排序
+        Self::sort_flows(&mut all_flows, sort_by, sort_desc);
+
+        // 计算分页
+        let total = all_flows.len();
+        let total_pages = if page_size > 0 {
+            (total + page_size - 1) / page_size
+        } else {
+            0
+        };
+
+        // 应用分页
+        let page = page.max(1);
+        let start = (page - 1) * page_size;
+        let end = (start + page_size).min(total);
+
+        let flows = if start < total {
+            all_flows[start..end].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        Ok(FlowQueryResult {
+            flows,
+            total,
+            page,
+            page_size,
+            total_pages,
+            has_next: page < total_pages,
+            has_prev: page > 1,
+        })
+    }
+
     /// 排序 Flow 列表
     fn sort_flows(flows: &mut [LLMFlow], sort_by: FlowSortBy, desc: bool) {
         flows.sort_by(|a, b| {
@@ -331,31 +445,73 @@ impl FlowQueryService {
 
         let mut results = Vec::new();
 
-        // 使用内容搜索过滤器
-        let filter = FlowFilter {
-            content_search: Some(query.to_string()),
-            ..Default::default()
-        };
+        // 获取所有 Flow 并手动搜索
+        let all_flows = store.get_recent(10000); // 获取足够多的 Flow
 
-        let flows = store.query(&filter);
+        for flow in all_flows {
+            // 检查是否匹配搜索条件
+            let mut matches = false;
+            let mut match_text = String::new();
 
-        for flow in flows.into_iter().take(limit) {
-            let content = flow
-                .response
-                .as_ref()
-                .map_or(String::new(), |r| r.content.clone());
-            let snippet = Self::extract_snippet(&content, &query_lower, 100);
-            let score = Self::calculate_score(&content, &query_lower);
+            // 搜索 Flow ID
+            if flow.id.to_lowercase().contains(&query_lower) {
+                matches = true;
+                match_text = flow.id.clone();
+            }
 
-            results.push(FlowSearchResult {
-                id: flow.id,
-                created_at: flow.timestamps.created,
-                model: flow.request.model,
-                provider: format!("{:?}", flow.metadata.provider),
-                snippet,
-                score,
-            });
+            // 搜索模型名称
+            if !matches && flow.request.model.to_lowercase().contains(&query_lower) {
+                matches = true;
+                match_text = flow.request.model.clone();
+            }
+
+            // 搜索响应内容
+            if !matches {
+                if let Some(ref response) = flow.response {
+                    if response.content.to_lowercase().contains(&query_lower) {
+                        matches = true;
+                        match_text = response.content.clone();
+                    }
+                }
+            }
+
+            // 搜索请求消息
+            if !matches {
+                for message in &flow.request.messages {
+                    let message_text = message.content.get_all_text();
+                    if message_text.to_lowercase().contains(&query_lower) {
+                        matches = true;
+                        match_text = message_text;
+                        break;
+                    }
+                }
+            }
+
+            if matches {
+                let snippet = Self::extract_snippet(&match_text, &query_lower, 100);
+                let score = Self::calculate_score(&match_text, &query_lower);
+
+                results.push(FlowSearchResult {
+                    id: flow.id,
+                    created_at: flow.timestamps.created,
+                    model: flow.request.model,
+                    provider: format!("{:?}", flow.metadata.provider),
+                    snippet,
+                    score,
+                });
+
+                if results.len() >= limit {
+                    break;
+                }
+            }
         }
+
+        // 按分数排序
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         results
     }

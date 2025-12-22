@@ -8,6 +8,8 @@ import {
   Tag,
   ChevronDown,
   ChevronUp,
+  Code2,
+  HelpCircle,
 } from "lucide-react";
 import {
   flowMonitorApi,
@@ -15,13 +17,17 @@ import {
   type FlowState,
   type ProviderType,
 } from "@/lib/api/flowMonitor";
+import { FilterExpressionInput } from "./FilterExpressionInput";
+import { FilterHelp } from "./FilterHelp";
 import { cn } from "@/lib/utils";
 
 interface FlowFiltersProps {
   filter: FlowFilter;
   onChange: (filter: FlowFilter) => void;
-  onSearch?: (query: string) => void;
 }
+
+// 过滤模式
+type FilterMode = "simple" | "expression";
 
 const PROVIDERS: ProviderType[] = [
   "Kiro",
@@ -53,10 +59,14 @@ const TIME_PRESETS = [
   { label: "全部", hours: 0 },
 ];
 
-export function FlowFilters({ filter, onChange, onSearch }: FlowFiltersProps) {
+export function FlowFilters({ filter, onChange }: FlowFiltersProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [filterMode, setFilterMode] = useState<FilterMode>("simple");
+  const [expressionValue, setExpressionValue] = useState("");
+  const [showHelp, setShowHelp] = useState(false);
+  const [expressionValid, setExpressionValid] = useState<boolean>(true);
 
   // 加载可用标签
   useEffect(() => {
@@ -65,8 +75,22 @@ export function FlowFilters({ filter, onChange, onSearch }: FlowFiltersProps) {
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (searchQuery.trim()) {
-      onSearch?.(searchQuery.trim());
+    // 直接更新 filter 的 content_search 字段
+    onChange({
+      ...filter,
+      content_search: searchQuery.trim() || undefined,
+    });
+  };
+
+  // 当搜索框内容改变时，如果为空则清除搜索
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    // 如果清空搜索框，立即清除搜索过滤
+    if (!value.trim() && filter.content_search) {
+      onChange({
+        ...filter,
+        content_search: undefined,
+      });
     }
   };
 
@@ -122,6 +146,98 @@ export function FlowFilters({ filter, onChange, onSearch }: FlowFiltersProps) {
   const handleClearFilters = () => {
     onChange({});
     setSearchQuery("");
+    setExpressionValue("");
+  };
+
+  const handleModeToggle = () => {
+    const newMode = filterMode === "simple" ? "expression" : "simple";
+    setFilterMode(newMode);
+
+    // 切换模式时清除当前过滤器
+    if (newMode === "expression") {
+      // 切换到表达式模式时，尝试将当前过滤器转换为表达式
+      const expr = convertFilterToExpression(filter);
+      setExpressionValue(expr);
+      onChange({});
+    } else {
+      // 切换到简单模式时，清除表达式
+      setExpressionValue("");
+      onChange({});
+    }
+  };
+
+  const handleExpressionSubmit = (expression: string) => {
+    if (expressionValid && expression.trim()) {
+      // 使用表达式查询（这里需要后端支持）
+      // 暂时将表达式存储在 content_search 字段中作为标记
+      onChange({
+        filter_expression: expression.trim(),
+      });
+    }
+  };
+
+  const handleExpressionValidation = (
+    valid: boolean,
+    _error: string | null,
+  ) => {
+    setExpressionValid(valid);
+  };
+
+  const handleInsertExample = (example: string) => {
+    setExpressionValue(example);
+    setShowHelp(false);
+  };
+
+  // 将当前过滤器转换为表达式（简单实现）
+  const convertFilterToExpression = (currentFilter: FlowFilter): string => {
+    const parts: string[] = [];
+
+    if (currentFilter.providers?.length) {
+      const providerExprs = currentFilter.providers.map((p) => `~p ${p}`);
+      if (providerExprs.length === 1) {
+        parts.push(providerExprs[0]);
+      } else {
+        parts.push(`(${providerExprs.join(" | ")})`);
+      }
+    }
+
+    if (currentFilter.states?.length) {
+      const stateExprs = currentFilter.states.map(
+        (s) => `~s ${s.toLowerCase()}`,
+      );
+      if (stateExprs.length === 1) {
+        parts.push(stateExprs[0]);
+      } else {
+        parts.push(`(${stateExprs.join(" | ")})`);
+      }
+    }
+
+    if (currentFilter.has_error === true) {
+      parts.push("~e");
+    }
+
+    if (currentFilter.has_tool_calls === true) {
+      parts.push("~t");
+    }
+
+    if (currentFilter.has_thinking === true) {
+      parts.push("~k");
+    }
+
+    if (currentFilter.starred_only) {
+      parts.push("~starred");
+    }
+
+    if (currentFilter.content_search) {
+      parts.push(`~b "${currentFilter.content_search}"`);
+    }
+
+    if (currentFilter.tags?.length) {
+      const tagExprs = currentFilter.tags.map((t) => `~tag ${t}`);
+      parts.push(...tagExprs);
+    }
+
+    return parts.join(" & ");
   };
 
   const hasActiveFilters =
@@ -134,7 +250,8 @@ export function FlowFilters({ filter, onChange, onSearch }: FlowFiltersProps) {
     filter.has_thinking !== undefined ||
     filter.starred_only ||
     filter.content_search ||
-    filter.models?.length;
+    filter.models?.length ||
+    filter.filter_expression;
 
   const activeFilterCount = [
     filter.providers?.length,
@@ -147,31 +264,111 @@ export function FlowFilters({ filter, onChange, onSearch }: FlowFiltersProps) {
     filter.starred_only ? 1 : 0,
     filter.content_search ? 1 : 0,
     filter.models?.length,
+    filter.filter_expression ? 1 : 0,
   ].reduce((sum: number, val) => sum + (val || 0), 0);
 
   return (
     <div className="space-y-3">
-      {/* 搜索栏 */}
-      <form onSubmit={handleSearchSubmit} className="flex gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="搜索内容..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-lg border bg-background pl-9 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-          />
+      {/* 过滤模式切换 */}
+      <div className="flex items-center gap-2">
+        <div className="flex rounded-lg border p-1">
+          <button
+            onClick={() => filterMode !== "simple" && handleModeToggle()}
+            className={cn(
+              "px-3 py-1 text-sm rounded transition-colors",
+              filterMode === "simple"
+                ? "bg-primary text-primary-foreground"
+                : "hover:bg-muted",
+            )}
+          >
+            <Search className="h-4 w-4 inline mr-1" />
+            简单过滤
+          </button>
+          <button
+            onClick={() => filterMode !== "expression" && handleModeToggle()}
+            className={cn(
+              "px-3 py-1 text-sm rounded transition-colors",
+              filterMode === "expression"
+                ? "bg-primary text-primary-foreground"
+                : "hover:bg-muted",
+            )}
+          >
+            <Code2 className="h-4 w-4 inline mr-1" />
+            表达式
+          </button>
         </div>
-        <button
-          type="submit"
-          className="rounded-lg border px-4 py-2 text-sm hover:bg-muted"
-        >
-          搜索
-        </button>
-      </form>
 
-      {/* 快捷过滤器 */}
+        {/* 帮助按钮（仅在表达式模式显示） */}
+        {filterMode === "expression" && (
+          <button
+            onClick={() => setShowHelp(!showHelp)}
+            className={cn(
+              "p-2 rounded-lg border hover:bg-muted",
+              showHelp && "bg-muted",
+            )}
+            title="显示帮助"
+          >
+            <HelpCircle className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {/* 表达式模式 */}
+      {filterMode === "expression" ? (
+        <div className="space-y-3">
+          <FilterExpressionInput
+            value={expressionValue}
+            onChange={setExpressionValue}
+            onSubmit={handleExpressionSubmit}
+            onValidationChange={handleExpressionValidation}
+            showHelp={showHelp}
+            onHelpToggle={() => setShowHelp(!showHelp)}
+          />
+
+          {/* 帮助面板 */}
+          {showHelp && (
+            <FilterHelp
+              onClose={() => setShowHelp(false)}
+              onInsertExample={handleInsertExample}
+            />
+          )}
+
+          {/* 当前表达式状态 */}
+          {filter.filter_expression && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span>当前表达式:</span>
+              <code className="px-2 py-1 rounded bg-muted font-mono text-xs">
+                {filter.filter_expression}
+              </code>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* 简单模式 - 原有的搜索栏和过滤器 */
+        <>
+          {/* 搜索栏 */}
+          <form onSubmit={handleSearchSubmit} className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="搜索内容..."
+                value={searchQuery}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                className="w-full rounded-lg border bg-background pl-9 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            <button
+              type="submit"
+              className="rounded-lg border px-4 py-2 text-sm hover:bg-muted"
+            >
+              搜索
+            </button>
+          </form>
+        </>
+      )}
+
+      {/* 快捷过滤器（两种模式都显示） */}
       <div className="flex items-center gap-2 flex-wrap">
         {/* 时间预设 */}
         <div className="flex items-center gap-1">
@@ -210,24 +407,26 @@ export function FlowFilters({ filter, onChange, onSearch }: FlowFiltersProps) {
           收藏
         </button>
 
-        {/* 展开/收起高级过滤器 */}
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-muted ml-auto"
-        >
-          <Filter className="h-3 w-3" />
-          高级过滤
-          {activeFilterCount > 0 && (
-            <span className="bg-primary text-primary-foreground text-xs px-1.5 rounded-full">
-              {activeFilterCount}
-            </span>
-          )}
-          {expanded ? (
-            <ChevronUp className="h-3 w-3" />
-          ) : (
-            <ChevronDown className="h-3 w-3" />
-          )}
-        </button>
+        {/* 展开/收起高级过滤器（仅简单模式） */}
+        {filterMode === "simple" && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-muted ml-auto"
+          >
+            <Filter className="h-3 w-3" />
+            高级过滤
+            {activeFilterCount > 0 && (
+              <span className="bg-primary text-primary-foreground text-xs px-1.5 rounded-full">
+                {activeFilterCount}
+              </span>
+            )}
+            {expanded ? (
+              <ChevronUp className="h-3 w-3" />
+            ) : (
+              <ChevronDown className="h-3 w-3" />
+            )}
+          </button>
+        )}
 
         {/* 清除过滤器 */}
         {hasActiveFilters && (
@@ -241,8 +440,8 @@ export function FlowFilters({ filter, onChange, onSearch }: FlowFiltersProps) {
         )}
       </div>
 
-      {/* 高级过滤器面板 */}
-      {expanded && (
+      {/* 高级过滤器面板（仅简单模式且展开时显示） */}
+      {filterMode === "simple" && expanded && (
         <div className="rounded-lg border bg-card p-4 space-y-4">
           {/* 提供商过滤 */}
           <FilterSection title="提供商">

@@ -27,13 +27,21 @@ use std::sync::Arc;
 use tauri::{Manager, Runtime};
 use tokio::sync::RwLock;
 
-use commands::flow_monitor_cmd::{FlowMonitorState, FlowQueryServiceState};
+use commands::flow_monitor_cmd::{
+    BatchOperationsState, BookmarkManagerState, EnhancedStatsServiceState, FlowInterceptorState,
+    FlowMonitorState, FlowQueryServiceState, FlowReplayerState, QuickFilterManagerState,
+    SessionManagerState,
+};
 use commands::plugin_cmd::PluginManagerState;
 use commands::provider_pool_cmd::{CredentialSyncServiceState, ProviderPoolServiceState};
 use commands::resilience_cmd::ResilienceConfigState;
 use commands::router_cmd::RouterConfigState;
 use commands::skill_cmd::SkillServiceState;
-use flow_monitor::{FlowFileStore, FlowMonitor, FlowMonitorConfig, FlowQueryService};
+use flow_monitor::{
+    BatchOperations, BookmarkManager, EnhancedStatsService, FlowFileStore, FlowInterceptor,
+    FlowMonitor, FlowMonitorConfig, FlowQueryService, FlowReplayer, InterceptConfig,
+    QuickFilterManager, SessionManager,
+};
 use services::provider_pool_service::ProviderPoolService;
 use services::skill_service::SkillService;
 use services::token_cache_service::TokenCacheService;
@@ -1450,6 +1458,46 @@ pub fn run() {
     ));
     let flow_monitor_state = FlowMonitorState(flow_monitor.clone());
 
+    // 初始化 Flow 拦截器
+    let flow_interceptor = Arc::new(FlowInterceptor::new(InterceptConfig::default()));
+    let flow_interceptor_state = FlowInterceptorState(flow_interceptor.clone());
+
+    // 初始化 Flow 重放器
+    let flow_replayer = Arc::new(FlowReplayer::new(
+        flow_monitor.clone(),
+        provider_pool_service_state.0.clone(),
+        db.clone(),
+    ));
+    let flow_replayer_state = FlowReplayerState(flow_replayer);
+
+    // 初始化会话管理器
+    let db_path = database::get_db_path();
+    let session_manager =
+        Arc::new(SessionManager::new(db_path.clone()).expect("Failed to create SessionManager"));
+    let session_manager_state = SessionManagerState(session_manager);
+
+    // 初始化快速过滤器管理器
+    let quick_filter_manager = Arc::new(
+        QuickFilterManager::new(db_path.clone()).expect("Failed to create QuickFilterManager"),
+    );
+    let quick_filter_manager_state = QuickFilterManagerState(quick_filter_manager);
+
+    // 初始化书签管理器
+    let bookmark_manager =
+        Arc::new(BookmarkManager::new(db_path).expect("Failed to create BookmarkManager"));
+    let bookmark_manager_state = BookmarkManagerState(bookmark_manager);
+
+    // 初始化增强统计服务
+    let enhanced_stats_service = Arc::new(EnhancedStatsService::new(flow_monitor.memory_store()));
+    let enhanced_stats_service_state = EnhancedStatsServiceState(enhanced_stats_service);
+
+    // 初始化批量操作服务
+    let batch_operations = Arc::new(BatchOperations::new(
+        flow_monitor.clone(),
+        Some(session_manager_state.0.clone()),
+    ));
+    let batch_operations_state = BatchOperationsState(batch_operations);
+
     // FlowQueryService 需要 file_store，如果没有则创建一个临时的
     let flow_query_service_state = if let Some(file_store) = flow_file_store {
         let query_service = FlowQueryService::new(flow_monitor.memory_store(), file_store);
@@ -1483,6 +1531,7 @@ pub fn run() {
     let shared_tokens_clone = shared_tokens.clone();
     let shared_logger_clone = shared_logger.clone();
     let flow_monitor_clone = flow_monitor.clone();
+    let flow_interceptor_clone = flow_interceptor.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -1504,6 +1553,13 @@ pub fn run() {
         .manage(plugin_manager_state)
         .manage(flow_monitor_state)
         .manage(flow_query_service_state)
+        .manage(flow_interceptor_state)
+        .manage(flow_replayer_state)
+        .manage(session_manager_state)
+        .manage(quick_filter_manager_state)
+        .manage(bookmark_manager_state)
+        .manage(enhanced_stats_service_state)
+        .manage(batch_operations_state)
         .setup(move |app| {
             // 初始化托盘管理器
             // Requirements 1.4: 应用启动时显示停止状态图标
@@ -1564,6 +1620,7 @@ pub fn run() {
                             Some(shared_tokens),
                             Some(shared_logger),
                             Some(shared_flow_monitor),
+                            Some(flow_interceptor_clone),
                         )
                         .await
                     {
@@ -1851,6 +1908,95 @@ pub fn run() {
             commands::flow_monitor_cmd::disable_flow_monitor,
             commands::flow_monitor_cmd::subscribe_flow_events,
             commands::flow_monitor_cmd::get_all_flow_tags,
+            // Flow Monitor filter expression commands
+            commands::flow_monitor_cmd::parse_filter,
+            commands::flow_monitor_cmd::validate_filter,
+            commands::flow_monitor_cmd::get_filter_help_items,
+            commands::flow_monitor_cmd::get_filter_help_text,
+            commands::flow_monitor_cmd::query_flows_with_expression,
+            // Flow Interceptor commands
+            commands::flow_monitor_cmd::intercept_config_get,
+            commands::flow_monitor_cmd::intercept_config_set,
+            commands::flow_monitor_cmd::intercept_continue,
+            commands::flow_monitor_cmd::intercept_cancel,
+            commands::flow_monitor_cmd::intercept_get_flow,
+            commands::flow_monitor_cmd::intercept_list_flows,
+            commands::flow_monitor_cmd::intercept_count,
+            commands::flow_monitor_cmd::intercept_is_enabled,
+            commands::flow_monitor_cmd::intercept_enable,
+            commands::flow_monitor_cmd::intercept_disable,
+            commands::flow_monitor_cmd::intercept_set_editing,
+            commands::flow_monitor_cmd::subscribe_intercept_events,
+            // Flow Monitor realtime enhancement commands
+            commands::flow_monitor_cmd::get_threshold_config,
+            commands::flow_monitor_cmd::update_threshold_config,
+            commands::flow_monitor_cmd::get_request_rate,
+            commands::flow_monitor_cmd::set_rate_window,
+            // Flow Replayer commands
+            commands::flow_monitor_cmd::replay_flow,
+            commands::flow_monitor_cmd::replay_flows_batch,
+            // Flow Diff commands
+            commands::flow_monitor_cmd::diff_flows,
+            // Session Management commands
+            commands::flow_monitor_cmd::create_session,
+            commands::flow_monitor_cmd::get_session,
+            commands::flow_monitor_cmd::list_sessions,
+            commands::flow_monitor_cmd::add_flow_to_session,
+            commands::flow_monitor_cmd::remove_flow_from_session,
+            commands::flow_monitor_cmd::update_session,
+            commands::flow_monitor_cmd::archive_session,
+            commands::flow_monitor_cmd::unarchive_session,
+            commands::flow_monitor_cmd::delete_session,
+            commands::flow_monitor_cmd::export_session,
+            commands::flow_monitor_cmd::get_session_flow_count,
+            commands::flow_monitor_cmd::is_flow_in_session,
+            commands::flow_monitor_cmd::get_sessions_for_flow,
+            commands::flow_monitor_cmd::get_auto_session_config,
+            commands::flow_monitor_cmd::set_auto_session_config,
+            commands::flow_monitor_cmd::register_active_session,
+            // Quick Filter commands
+            commands::flow_monitor_cmd::save_quick_filter,
+            commands::flow_monitor_cmd::get_quick_filter,
+            commands::flow_monitor_cmd::update_quick_filter,
+            commands::flow_monitor_cmd::delete_quick_filter,
+            commands::flow_monitor_cmd::list_quick_filters,
+            commands::flow_monitor_cmd::list_quick_filters_by_group,
+            commands::flow_monitor_cmd::list_quick_filter_groups,
+            commands::flow_monitor_cmd::export_quick_filters,
+            commands::flow_monitor_cmd::import_quick_filters,
+            commands::flow_monitor_cmd::find_quick_filter_by_name,
+            // Code Export commands
+            commands::flow_monitor_cmd::export_flow_as_code,
+            commands::flow_monitor_cmd::export_flows_as_code,
+            commands::flow_monitor_cmd::get_code_export_formats,
+            // Bookmark Management commands
+            commands::flow_monitor_cmd::add_bookmark,
+            commands::flow_monitor_cmd::get_bookmark,
+            commands::flow_monitor_cmd::get_bookmark_by_flow_id,
+            commands::flow_monitor_cmd::remove_bookmark,
+            commands::flow_monitor_cmd::remove_bookmark_by_flow_id,
+            commands::flow_monitor_cmd::update_bookmark,
+            commands::flow_monitor_cmd::list_bookmarks,
+            commands::flow_monitor_cmd::list_bookmark_groups,
+            commands::flow_monitor_cmd::is_flow_bookmarked,
+            commands::flow_monitor_cmd::get_bookmark_count,
+            commands::flow_monitor_cmd::export_bookmarks,
+            commands::flow_monitor_cmd::import_bookmarks,
+            commands::flow_monitor_cmd::toggle_bookmark,
+            // Enhanced Stats commands
+            commands::flow_monitor_cmd::get_enhanced_stats,
+            commands::flow_monitor_cmd::get_request_trend,
+            commands::flow_monitor_cmd::get_token_distribution,
+            commands::flow_monitor_cmd::get_latency_histogram,
+            commands::flow_monitor_cmd::export_stats_report,
+            // Batch Operations commands
+            commands::flow_monitor_cmd::batch_star_flows,
+            commands::flow_monitor_cmd::batch_unstar_flows,
+            commands::flow_monitor_cmd::batch_add_tags,
+            commands::flow_monitor_cmd::batch_remove_tags,
+            commands::flow_monitor_cmd::batch_export_flows,
+            commands::flow_monitor_cmd::batch_delete_flows,
+            commands::flow_monitor_cmd::batch_add_to_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

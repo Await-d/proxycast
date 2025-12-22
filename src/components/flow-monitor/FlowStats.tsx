@@ -12,13 +12,19 @@ import {
   PieChart,
   Loader2,
   AlertCircle,
+  LineChart,
 } from "lucide-react";
 import {
   flowMonitorApi,
+  enhancedStatsApi,
   type FlowStats as FlowStatsType,
   type FlowFilter,
   type ProviderStats,
   type ModelStats,
+  type EnhancedStats,
+  type TrendData,
+  type Distribution,
+  type StatsTimeRange,
   formatLatency,
   formatTokenCount,
 } from "@/lib/api/flowMonitor";
@@ -33,6 +39,8 @@ interface FlowStatsProps {
   onRefresh?: () => void;
   /** 是否显示紧凑模式 */
   compact?: boolean;
+  /** 是否显示增强统计 */
+  showEnhanced?: boolean;
 }
 
 export function FlowStats({
@@ -40,18 +48,44 @@ export function FlowStats({
   autoRefreshInterval = 0,
   onRefresh,
   compact = false,
+  showEnhanced = true,
 }: FlowStatsProps) {
   const [stats, setStats] = useState<FlowStatsType | null>(null);
+  const [enhancedStats, setEnhancedStats] = useState<EnhancedStats | null>(
+    null,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [timeRangeHours, setTimeRangeHours] = useState(24);
+  const [activeTab, setActiveTab] = useState<
+    "overview" | "trends" | "distribution"
+  >("overview");
+
+  const getTimeRange = useCallback((): StatsTimeRange => {
+    const now = new Date();
+    return {
+      start: new Date(
+        now.getTime() - timeRangeHours * 60 * 60 * 1000,
+      ).toISOString(),
+      end: now.toISOString(),
+    };
+  }, [timeRangeHours]);
 
   const fetchStats = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const result = await flowMonitorApi.getFlowStats(filter);
-      setStats(result);
+
+      const [basicStats, enhanced] = await Promise.all([
+        flowMonitorApi.getFlowStats(filter),
+        showEnhanced
+          ? enhancedStatsApi.getEnhancedStats(filter, getTimeRange())
+          : Promise.resolve(null),
+      ]);
+
+      setStats(basicStats);
+      setEnhancedStats(enhanced);
       setLastUpdated(new Date());
     } catch (e) {
       console.error("Failed to fetch flow stats:", e);
@@ -59,7 +93,7 @@ export function FlowStats({
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, showEnhanced, getTimeRange]);
 
   useEffect(() => {
     fetchStats();
@@ -127,6 +161,18 @@ export function FlowStats({
           统计仪表板
         </h2>
         <div className="flex items-center gap-2">
+          {/* 时间范围选择 */}
+          <select
+            value={timeRangeHours}
+            onChange={(e) => setTimeRangeHours(Number(e.target.value))}
+            className="rounded border px-2 py-1 text-sm bg-background"
+          >
+            <option value={1}>最近 1 小时</option>
+            <option value={6}>最近 6 小时</option>
+            <option value={24}>最近 24 小时</option>
+            <option value={72}>最近 3 天</option>
+            <option value={168}>最近 7 天</option>
+          </select>
           {lastUpdated && (
             <span className="text-xs text-muted-foreground">
               更新于 {lastUpdated.toLocaleTimeString("zh-CN")}
@@ -143,6 +189,75 @@ export function FlowStats({
         </div>
       </div>
 
+      {/* 标签页切换 */}
+      {showEnhanced && (
+        <div className="flex border-b">
+          <button
+            onClick={() => setActiveTab("overview")}
+            className={cn(
+              "px-4 py-2 text-sm font-medium border-b-2 -mb-px",
+              activeTab === "overview"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            概览
+          </button>
+          <button
+            onClick={() => setActiveTab("trends")}
+            className={cn(
+              "px-4 py-2 text-sm font-medium border-b-2 -mb-px",
+              activeTab === "trends"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            趋势
+          </button>
+          <button
+            onClick={() => setActiveTab("distribution")}
+            className={cn(
+              "px-4 py-2 text-sm font-medium border-b-2 -mb-px",
+              activeTab === "distribution"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            分布
+          </button>
+        </div>
+      )}
+
+      {/* 概览标签页 */}
+      {activeTab === "overview" && (
+        <OverviewTab stats={stats} enhancedStats={enhancedStats} />
+      )}
+
+      {/* 趋势标签页 */}
+      {activeTab === "trends" && enhancedStats && (
+        <TrendsTab enhancedStats={enhancedStats} />
+      )}
+
+      {/* 分布标签页 */}
+      {activeTab === "distribution" && enhancedStats && (
+        <DistributionTab enhancedStats={enhancedStats} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// 概览标签页
+// ============================================================================
+
+interface OverviewTabProps {
+  stats: FlowStatsType;
+  enhancedStats: EnhancedStats | null;
+}
+
+function OverviewTab({ stats, enhancedStats }: OverviewTabProps) {
+  return (
+    <div className="space-y-6">
       {/* 核心指标卡片 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
@@ -193,6 +308,24 @@ export function FlowStats({
           subtitle={`输入 ${formatTokenCount(stats.total_input_tokens)} / 输出 ${formatTokenCount(stats.total_output_tokens)}`}
         />
       </div>
+
+      {/* 请求速率（如果有增强统计） */}
+      {enhancedStats && (
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Activity className="h-4 w-4 text-blue-500" />
+              请求速率
+            </h3>
+            <span className="text-2xl font-bold">
+              {enhancedStats.request_rate.toFixed(2)}{" "}
+              <span className="text-sm font-normal text-muted-foreground">
+                请求/秒
+              </span>
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* 成功/失败统计 */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -292,6 +425,376 @@ export function FlowStats({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================================
+// 趋势标签页
+// ============================================================================
+
+interface TrendsTabProps {
+  enhancedStats: EnhancedStats;
+}
+
+function TrendsTab({ enhancedStats }: TrendsTabProps) {
+  return (
+    <div className="space-y-6">
+      {/* 请求趋势图 */}
+      <div className="rounded-lg border bg-card p-4">
+        <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
+          <LineChart className="h-4 w-4 text-blue-500" />
+          请求趋势
+        </h3>
+        <TrendChart data={enhancedStats.request_trend} />
+      </div>
+
+      {/* 成功率趋势（按提供商） */}
+      {enhancedStats.success_by_provider.length > 0 && (
+        <div className="rounded-lg border bg-card p-4">
+          <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            按提供商成功率
+          </h3>
+          <SuccessRateChart data={enhancedStats.success_by_provider} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// 分布标签页
+// ============================================================================
+
+interface DistributionTabProps {
+  enhancedStats: EnhancedStats;
+}
+
+function DistributionTab({ enhancedStats }: DistributionTabProps) {
+  return (
+    <div className="space-y-6">
+      {/* Token 分布（按模型） */}
+      {enhancedStats.token_by_model.buckets.length > 0 && (
+        <div className="rounded-lg border bg-card p-4">
+          <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
+            <Zap className="h-4 w-4 text-orange-500" />
+            Token 分布（按模型）
+          </h3>
+          <DistributionChart
+            data={enhancedStats.token_by_model}
+            formatValue={formatTokenCount}
+            color="bg-orange-500"
+          />
+        </div>
+      )}
+
+      {/* 延迟直方图 */}
+      {enhancedStats.latency_histogram.buckets.length > 0 && (
+        <div className="rounded-lg border bg-card p-4">
+          <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
+            <Clock className="h-4 w-4 text-purple-500" />
+            延迟分布
+          </h3>
+          <HistogramChart
+            data={enhancedStats.latency_histogram}
+            color="bg-purple-500"
+          />
+        </div>
+      )}
+
+      {/* 错误分布 */}
+      {enhancedStats.error_distribution.buckets.length > 0 && (
+        <div className="rounded-lg border bg-card p-4">
+          <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
+            <XCircle className="h-4 w-4 text-red-500" />
+            错误分布
+          </h3>
+          <DistributionChart
+            data={enhancedStats.error_distribution}
+            color="bg-red-500"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// 趋势图组件
+// ============================================================================
+
+interface TrendChartProps {
+  data: TrendData;
+}
+
+function TrendChart({ data }: TrendChartProps) {
+  if (data.points.length === 0) {
+    return (
+      <div className="h-48 flex items-center justify-center text-muted-foreground">
+        暂无数据
+      </div>
+    );
+  }
+
+  const maxValue = Math.max(...data.points.map((p) => p.value), 1);
+
+  return (
+    <div className="space-y-2">
+      <div className="relative h-40 w-full">
+        {/* Y 轴标签 */}
+        <div className="absolute left-0 top-0 bottom-0 w-12 flex flex-col justify-between text-xs text-muted-foreground">
+          <span>{maxValue}</span>
+          <span>{Math.round(maxValue / 2)}</span>
+          <span>0</span>
+        </div>
+
+        {/* 图表区域 */}
+        <div className="ml-14 h-full relative">
+          {/* 网格线 */}
+          <div className="absolute inset-0 flex flex-col justify-between">
+            <div className="border-b border-dashed border-muted" />
+            <div className="border-b border-dashed border-muted" />
+            <div className="border-b border-muted" />
+          </div>
+
+          {/* 数据条 */}
+          <div className="absolute inset-0 flex items-end gap-px">
+            {data.points.map((point, index) => {
+              const height = (point.value / maxValue) * 100;
+              return (
+                <div
+                  key={index}
+                  className="flex-1 bg-blue-500 hover:bg-blue-600 transition-colors rounded-t"
+                  style={{ height: `${height}%` }}
+                  title={`${new Date(point.timestamp).toLocaleString("zh-CN")}: ${point.value} 请求`}
+                />
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* X 轴标签 */}
+      <div className="ml-14 flex justify-between text-xs text-muted-foreground">
+        {data.points.length > 0 && (
+          <>
+            <span>
+              {new Date(data.points[0].timestamp).toLocaleTimeString("zh-CN", {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </span>
+            {data.points.length > 1 && (
+              <span>
+                {new Date(
+                  data.points[data.points.length - 1].timestamp,
+                ).toLocaleTimeString("zh-CN", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="text-xs text-muted-foreground text-center">
+        时间间隔: {data.interval}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// 成功率图表组件
+// ============================================================================
+
+interface SuccessRateChartProps {
+  data: [string, number][];
+}
+
+function SuccessRateChart({ data }: SuccessRateChartProps) {
+  if (data.length === 0) {
+    return (
+      <div className="h-32 flex items-center justify-center text-muted-foreground">
+        暂无数据
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {data.map(([provider, rate]) => {
+        const percentage = rate * 100;
+        return (
+          <div key={provider} className="space-y-1">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium">{provider}</span>
+              <span
+                className={cn(
+                  percentage >= 95
+                    ? "text-green-600"
+                    : percentage >= 80
+                      ? "text-yellow-600"
+                      : "text-red-600",
+                )}
+              >
+                {percentage.toFixed(1)}%
+              </span>
+            </div>
+            <div className="h-2 bg-muted rounded-full overflow-hidden">
+              <div
+                className={cn(
+                  "h-full rounded-full transition-all",
+                  percentage >= 95
+                    ? "bg-green-500"
+                    : percentage >= 80
+                      ? "bg-yellow-500"
+                      : "bg-red-500",
+                )}
+                style={{ width: `${percentage}%` }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================================
+// 分布图组件
+// ============================================================================
+
+interface DistributionChartProps {
+  data: Distribution;
+  formatValue?: (value: number) => string;
+  color?: string;
+}
+
+function DistributionChart({
+  data,
+  formatValue = (v) => v.toString(),
+  color = "bg-blue-500",
+}: DistributionChartProps) {
+  if (data.buckets.length === 0) {
+    return (
+      <div className="h-32 flex items-center justify-center text-muted-foreground">
+        暂无数据
+      </div>
+    );
+  }
+
+  const maxValue = Math.max(...data.buckets.map(([, v]) => v), 1);
+
+  return (
+    <div className="space-y-3">
+      {data.buckets.slice(0, 10).map(([label, value]) => {
+        const percentage = (value / maxValue) * 100;
+        const totalPercentage = data.total > 0 ? (value / data.total) * 100 : 0;
+        return (
+          <div key={label} className="space-y-1">
+            <div className="flex items-center justify-between text-sm">
+              <span
+                className="font-medium truncate max-w-[200px]"
+                title={label}
+              >
+                {label}
+              </span>
+              <span className="text-muted-foreground">
+                {formatValue(value)} ({totalPercentage.toFixed(1)}%)
+              </span>
+            </div>
+            <div className="h-2 bg-muted rounded-full overflow-hidden">
+              <div
+                className={cn("h-full rounded-full transition-all", color)}
+                style={{ width: `${percentage}%` }}
+              />
+            </div>
+          </div>
+        );
+      })}
+      {data.buckets.length > 10 && (
+        <div className="text-xs text-muted-foreground text-center">
+          还有 {data.buckets.length - 10} 项未显示
+        </div>
+      )}
+      <div className="text-xs text-muted-foreground pt-2 border-t">
+        总计: {formatValue(data.total)}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// 直方图组件
+// ============================================================================
+
+interface HistogramChartProps {
+  data: Distribution;
+  color?: string;
+}
+
+function HistogramChart({
+  data,
+  color = "bg-purple-500",
+}: HistogramChartProps) {
+  if (data.buckets.length === 0) {
+    return (
+      <div className="h-32 flex items-center justify-center text-muted-foreground">
+        暂无数据
+      </div>
+    );
+  }
+
+  const maxValue = Math.max(...data.buckets.map(([, v]) => v), 1);
+
+  return (
+    <div className="space-y-4">
+      {/* 直方图 */}
+      <div className="h-32 flex items-end gap-1">
+        {data.buckets.map(([label, value], index) => {
+          const height = (value / maxValue) * 100;
+          const percentage = data.total > 0 ? (value / data.total) * 100 : 0;
+          return (
+            <div
+              key={index}
+              className="flex-1 flex flex-col items-center gap-1"
+            >
+              <div
+                className={cn(
+                  "w-full rounded-t transition-colors hover:opacity-80",
+                  color,
+                )}
+                style={{
+                  height: `${height}%`,
+                  minHeight: value > 0 ? "4px" : "0",
+                }}
+                title={`${label}: ${value} (${percentage.toFixed(1)}%)`}
+              />
+            </div>
+          );
+        })}
+      </div>
+
+      {/* X 轴标签 */}
+      <div className="flex gap-1">
+        {data.buckets.map(([label], index) => (
+          <div
+            key={index}
+            className="flex-1 text-xs text-muted-foreground text-center truncate"
+            title={label}
+          >
+            {label}
+          </div>
+        ))}
+      </div>
+
+      {/* 总计 */}
+      <div className="text-xs text-muted-foreground pt-2 border-t">
+        总计: {data.total} 请求
+      </div>
     </div>
   );
 }

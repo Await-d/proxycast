@@ -15,20 +15,31 @@ import {
   ExternalLink,
   Wifi,
   WifiOff,
+  Pause,
+  Play,
+  AlertTriangle,
+  Activity,
+  Bell,
+  BellOff,
 } from "lucide-react";
 import {
   flowMonitorApi,
+  realtimeMonitorApi,
   type LLMFlow,
   type FlowState,
   type FlowFilter,
   type FlowSortBy,
   type FlowQueryResult,
+  type ThresholdCheckResult,
+  type RequestRateResponse,
   formatFlowState,
   formatLatency,
   formatTokenCount,
   truncateText,
 } from "@/lib/api/flowMonitor";
 import { useFlowEvents } from "@/hooks/useFlowEvents";
+import { useFlowNotifications } from "@/hooks/useFlowNotifications";
+import { NotificationSettings } from "./NotificationSettings";
 import { cn } from "@/lib/utils";
 
 interface FlowListProps {
@@ -58,14 +69,46 @@ export function FlowList({
   const [sortDesc, setSortDesc] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  // 暂停/恢复实时更新状态
+  const [isPaused, setIsPaused] = useState(false);
+
+  // 请求速率状态
+  const [requestRate, setRequestRate] = useState<RequestRateResponse | null>(
+    null,
+  );
+
+  // 阈值警告状态
+  const [thresholdWarnings, setThresholdWarnings] = useState<
+    Map<string, ThresholdCheckResult>
+  >(new Map());
+
+  // 通知设置面板状态
+  const [showNotificationSettings, setShowNotificationSettings] =
+    useState(false);
+
+  // 通知功能
+  const {
+    notificationService,
+    requestPermission,
+    permissionStatus,
+    canNotify,
+  } = useFlowNotifications({
+    enabled: enableRealtime && !isPaused,
+    autoRequestPermission: false, // 不自动请求权限，让用户手动控制
+  });
+
   // 实时更新 Hook
   const {
     connected: wsConnected,
     connecting: wsConnecting,
     activeFlows,
+    lastThresholdWarning,
   } = useFlowEvents({
-    autoConnect: enableRealtime,
+    autoConnect: enableRealtime && !isPaused,
     onFlowStarted: (flow) => {
+      // 如果暂停了，不更新列表
+      if (isPaused) return;
+
       // 新 Flow 开始时，添加到列表顶部
       if (page === 1 && sortBy === "created_at" && sortDesc) {
         setFlows((prev) => {
@@ -156,12 +199,52 @@ export function FlowList({
         );
       }
     },
+    onThresholdWarning: (id, result) => {
+      // 阈值警告时，记录警告
+      setThresholdWarnings((prev) => {
+        const next = new Map(prev);
+        next.set(id, result);
+        return next;
+      });
+    },
   });
+
+  // 处理阈值警告
+  useEffect(() => {
+    if (lastThresholdWarning) {
+      setThresholdWarnings((prev) => {
+        const next = new Map(prev);
+        next.set(lastThresholdWarning.id, lastThresholdWarning.result);
+        return next;
+      });
+    }
+  }, [lastThresholdWarning]);
+
+  // 定期获取请求速率
+  useEffect(() => {
+    const fetchRequestRate = async () => {
+      try {
+        const rate = await realtimeMonitorApi.getRequestRate();
+        setRequestRate(rate);
+      } catch (e) {
+        console.error("Failed to fetch request rate:", e);
+      }
+    };
+
+    // 初始获取
+    fetchRequestRate();
+
+    // 每 5 秒更新一次
+    const interval = setInterval(fetchRequestRate, 5000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const fetchFlows = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
+      console.log("查询 Flow，过滤条件:", JSON.stringify(filter, null, 2));
       const result: FlowQueryResult = await flowMonitorApi.queryFlows(
         filter,
         sortBy,
@@ -169,6 +252,7 @@ export function FlowList({
         page,
         pageSize,
       );
+      console.log("查询结果:", result.total, "条记录");
       setFlows(result.flows);
       setTotalPages(result.total_pages);
       setTotal(result.total);
@@ -179,6 +263,11 @@ export function FlowList({
       setLoading(false);
     }
   }, [filter, sortBy, sortDesc, page, pageSize]);
+
+  // 当 filter 改变时，重置到第一页
+  useEffect(() => {
+    setPage(1);
+  }, [filter]);
 
   useEffect(() => {
     fetchFlows();
@@ -303,13 +392,19 @@ export function FlowList({
             <div className="flex items-center gap-1">
               {wsConnecting ? (
                 <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-              ) : wsConnected ? (
+              ) : wsConnected && !isPaused ? (
                 <Wifi className="h-3 w-3 text-green-500" />
               ) : (
                 <WifiOff className="h-3 w-3 text-muted-foreground" />
               )}
               <span className="text-xs text-muted-foreground">
-                {wsConnecting ? "连接中..." : wsConnected ? "实时更新" : "离线"}
+                {wsConnecting
+                  ? "连接中..."
+                  : wsConnected && !isPaused
+                    ? "实时更新"
+                    : isPaused
+                      ? "已暂停"
+                      : "离线"}
               </span>
             </div>
           )}
@@ -319,8 +414,95 @@ export function FlowList({
               {activeFlows.size} 进行中
             </span>
           )}
+          {/* 请求速率显示 */}
+          {requestRate && (
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Activity className="h-3 w-3" />
+              <span>{requestRate.rate.toFixed(2)} req/s</span>
+              <span className="text-muted-foreground/60">
+                ({requestRate.count} / {requestRate.window_seconds}s)
+              </span>
+            </div>
+          )}
+          {/* 阈值警告数量 */}
+          {thresholdWarnings.size > 0 && (
+            <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300">
+              <AlertTriangle className="h-3 w-3" />
+              {thresholdWarnings.size} 警告
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
+          {/* 通知设置按钮 */}
+          {enableRealtime && (
+            <button
+              onClick={async () => {
+                if (permissionStatus === "default") {
+                  await requestPermission();
+                } else {
+                  // 切换通知启用状态
+                  const config = notificationService.getConfig();
+                  notificationService.updateConfig({
+                    enabled: !config.enabled,
+                  });
+                }
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setShowNotificationSettings(true);
+              }}
+              className={cn(
+                "flex items-center gap-1 rounded border px-2 py-1 text-sm hover:bg-muted",
+                canNotify &&
+                  "bg-blue-50 border-blue-300 dark:bg-blue-900/20 dark:border-blue-700",
+              )}
+              title={
+                permissionStatus === "denied"
+                  ? "通知权限被拒绝，右键打开设置"
+                  : permissionStatus === "default"
+                    ? "点击启用通知，右键打开设置"
+                    : canNotify
+                      ? "通知已启用，右键打开设置"
+                      : "通知已禁用，右键打开设置"
+              }
+            >
+              {canNotify ? (
+                <>
+                  <Bell className="h-3 w-3" />
+                  通知
+                </>
+              ) : (
+                <>
+                  <BellOff className="h-3 w-3" />
+                  通知
+                </>
+              )}
+            </button>
+          )}
+          {/* 暂停/恢复按钮 */}
+          {enableRealtime && (
+            <button
+              onClick={() => setIsPaused(!isPaused)}
+              className={cn(
+                "flex items-center gap-1 rounded border px-2 py-1 text-sm hover:bg-muted",
+                isPaused &&
+                  "bg-yellow-50 border-yellow-300 dark:bg-yellow-900/20 dark:border-yellow-700",
+              )}
+              title={isPaused ? "恢复实时更新" : "暂停实时更新"}
+            >
+              {isPaused ? (
+                <>
+                  <Play className="h-3 w-3" />
+                  恢复
+                </>
+              ) : (
+                <>
+                  <Pause className="h-3 w-3" />
+                  暂停
+                </>
+              )}
+            </button>
+          )}
           <select
             className="rounded border bg-background px-2 py-1 text-sm"
             value={sortBy}
@@ -362,6 +544,7 @@ export function FlowList({
                 flow={flow}
                 expanded={expandedId === flow.id}
                 selected={selectedFlowId === flow.id}
+                thresholdWarning={thresholdWarnings.get(flow.id)}
                 onToggleExpand={() =>
                   setExpandedId(expandedId === flow.id ? null : flow.id)
                 }
@@ -399,6 +582,14 @@ export function FlowList({
           </button>
         </div>
       )}
+
+      {/* 通知设置面板 */}
+      <NotificationSettings
+        open={showNotificationSettings}
+        onClose={() => setShowNotificationSettings(false)}
+        permissionStatus={permissionStatus}
+        onRequestPermission={requestPermission}
+      />
     </div>
   );
 }
@@ -407,6 +598,7 @@ interface FlowListItemProps {
   flow: LLMFlow;
   expanded: boolean;
   selected: boolean;
+  thresholdWarning?: ThresholdCheckResult;
   onToggleExpand: () => void;
   onSelect: () => void;
   onToggleStar: (e: React.MouseEvent) => void;
@@ -420,6 +612,7 @@ function FlowListItem({
   flow,
   expanded,
   selected,
+  thresholdWarning,
   onToggleExpand,
   onSelect,
   onToggleStar,
@@ -432,12 +625,19 @@ function FlowListItem({
     flow.response?.tool_calls && flow.response.tool_calls.length > 0;
   const hasThinking = !!flow.response?.thinking;
   const hasError = !!flow.error;
+  const hasThresholdWarning =
+    thresholdWarning &&
+    (thresholdWarning.latency_exceeded ||
+      thresholdWarning.token_exceeded ||
+      thresholdWarning.input_token_exceeded ||
+      thresholdWarning.output_token_exceeded);
 
   return (
     <div
       className={cn(
         "hover:bg-muted/50 transition-colors",
         selected && "bg-muted",
+        hasThresholdWarning && "border-l-2 border-l-yellow-500",
       )}
     >
       {/* 主行 */}
@@ -500,10 +700,24 @@ function FlowListItem({
               <XCircle className="h-3.5 w-3.5 text-red-500" />
             </span>
           )}
+          {hasThresholdWarning && (
+            <span
+              title={`阈值警告: ${thresholdWarning.latency_exceeded ? "延迟超限 " : ""}${thresholdWarning.token_exceeded ? "Token超限" : ""}`}
+            >
+              <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />
+            </span>
+          )}
         </div>
 
         {/* Token 数 */}
-        <span className="text-xs text-muted-foreground w-20 text-right shrink-0">
+        <span
+          className={cn(
+            "text-xs w-20 text-right shrink-0",
+            thresholdWarning?.token_exceeded
+              ? "text-yellow-600 font-medium"
+              : "text-muted-foreground",
+          )}
+        >
           {flow.response?.usage
             ? formatTokenCount(flow.response.usage.total_tokens)
             : "-"}{" "}
@@ -511,7 +725,14 @@ function FlowListItem({
         </span>
 
         {/* 耗时 */}
-        <span className="text-xs text-muted-foreground w-16 text-right shrink-0">
+        <span
+          className={cn(
+            "text-xs w-16 text-right shrink-0",
+            thresholdWarning?.latency_exceeded
+              ? "text-yellow-600 font-medium"
+              : "text-muted-foreground",
+          )}
+        >
           {formatLatency(flow.timestamps.duration_ms)}
         </span>
 
@@ -527,6 +748,46 @@ function FlowListItem({
           )}
         </button>
       </div>
+
+      {/* 阈值警告详情 */}
+      {hasThresholdWarning && expanded && (
+        <div className="px-4 pb-3 pl-12">
+          <div className="rounded bg-yellow-50 dark:bg-yellow-950/20 p-3 text-yellow-700 dark:text-yellow-400 text-sm">
+            <div className="flex items-center gap-2 font-medium mb-2">
+              <AlertTriangle className="h-4 w-4" />
+              阈值警告
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {thresholdWarning.latency_exceeded && (
+                <div>
+                  延迟: {formatLatency(thresholdWarning.actual_latency_ms)}{" "}
+                  (超限)
+                </div>
+              )}
+              {thresholdWarning.token_exceeded && (
+                <div>
+                  Token: {formatTokenCount(thresholdWarning.actual_tokens)}{" "}
+                  (超限)
+                </div>
+              )}
+              {thresholdWarning.input_token_exceeded && (
+                <div>
+                  输入 Token:{" "}
+                  {formatTokenCount(thresholdWarning.actual_input_tokens)}{" "}
+                  (超限)
+                </div>
+              )}
+              {thresholdWarning.output_token_exceeded && (
+                <div>
+                  输出 Token:{" "}
+                  {formatTokenCount(thresholdWarning.actual_output_tokens)}{" "}
+                  (超限)
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 展开详情 */}
       {expanded && (

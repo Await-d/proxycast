@@ -7,7 +7,7 @@ use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::credential::CredentialSyncService;
 use crate::database::dao::provider_pool::ProviderPoolDao;
 use crate::database::DbConnection;
-use crate::flow_monitor::{FlowMonitor, FlowMonitorConfig};
+use crate::flow_monitor::{FlowInterceptor, FlowMonitor, FlowMonitorConfig};
 use crate::injection::Injector;
 use crate::logger::LogStore;
 use crate::models::anthropic::*;
@@ -236,6 +236,7 @@ impl ServerState {
             shared_tokens,
             shared_logger,
             None,
+            None,
         )
         .await
     }
@@ -255,6 +256,7 @@ impl ServerState {
         shared_tokens: Option<Arc<parking_lot::RwLock<crate::telemetry::TokenTracker>>>,
         shared_logger: Option<Arc<crate::telemetry::RequestLogger>>,
         shared_flow_monitor: Option<Arc<FlowMonitor>>,
+        shared_flow_interceptor: Option<Arc<FlowInterceptor>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if self.running {
             return Ok(());
@@ -306,6 +308,7 @@ impl ServerState {
                 shared_tokens,
                 shared_logger,
                 shared_flow_monitor,
+                shared_flow_interceptor,
                 Some(config),
                 Some(config_path),
             )
@@ -376,6 +379,8 @@ pub struct AppState {
     pub amp_router: Arc<crate::router::AmpRouter>,
     /// Flow 监控服务
     pub flow_monitor: Arc<FlowMonitor>,
+    /// Flow 拦截器
+    pub flow_interceptor: Arc<FlowInterceptor>,
 }
 
 /// 启动配置文件监控
@@ -654,6 +659,7 @@ async fn run_server(
     shared_tokens: Option<Arc<parking_lot::RwLock<crate::telemetry::TokenTracker>>>,
     shared_logger: Option<Arc<crate::telemetry::RequestLogger>>,
     shared_flow_monitor: Option<Arc<FlowMonitor>>,
+    shared_flow_interceptor: Option<Arc<FlowInterceptor>>,
     config: Option<Config>,
     config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -711,6 +717,10 @@ async fn run_server(
     let flow_monitor = shared_flow_monitor
         .unwrap_or_else(|| Arc::new(FlowMonitor::new(FlowMonitorConfig::default(), None)));
 
+    // 使用共享的 Flow 拦截器，如果没有则创建新的
+    let flow_interceptor =
+        shared_flow_interceptor.unwrap_or_else(|| Arc::new(FlowInterceptor::default()));
+
     let state = AppState {
         api_key: api_key.to_string(),
         base_url,
@@ -732,6 +742,7 @@ async fn run_server(
         request_logger: shared_logger,
         amp_router,
         flow_monitor,
+        flow_interceptor,
     };
 
     // 启动配置文件监控

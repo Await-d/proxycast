@@ -25,8 +25,9 @@ use std::collections::HashMap;
 
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::flow_monitor::{
-    ClientInfo, FlowError, FlowErrorType, FlowMetadata, LLMRequest, LLMResponse, Message,
-    MessageContent, MessageRole, RequestParameters, RoutingInfo, TokenUsage,
+    ClientInfo, FlowError, FlowErrorType, FlowMetadata, FlowType, InterceptAction, InterceptType,
+    LLMFlow, LLMRequest, LLMResponse, Message, MessageContent, MessageRole, RequestParameters,
+    RoutingInfo, TokenUsage,
 };
 use crate::models::anthropic::AnthropicMessagesRequest;
 use crate::models::openai::ChatCompletionRequest;
@@ -326,6 +327,176 @@ fn build_llm_response(status_code: u16, content: &str, usage: Option<(u32, u32)>
 }
 
 // ============================================================================
+// 拦截检查辅助函数
+// ============================================================================
+
+/// 拦截检查结果
+pub enum InterceptCheckResult {
+    /// 继续处理（可能带有修改后的请求）
+    Continue(Option<LLMRequest>),
+    /// 请求被取消
+    Cancelled,
+}
+
+/// 检查是否需要拦截请求
+///
+/// **Validates: Requirements 2.1, 2.3, 2.5**
+///
+/// 如果拦截器启用且请求匹配拦截规则，则拦截请求并等待用户操作。
+/// 返回 `InterceptCheckResult::Continue` 表示继续处理（可能带有修改后的请求），
+/// 返回 `InterceptCheckResult::Cancelled` 表示请求被取消。
+async fn check_request_intercept(
+    state: &AppState,
+    flow_id: &str,
+    llm_request: &LLMRequest,
+    flow_metadata: &FlowMetadata,
+) -> InterceptCheckResult {
+    // 创建临时 Flow 用于拦截检查
+    let temp_flow = LLMFlow::new(
+        flow_id.to_string(),
+        FlowType::ChatCompletions,
+        llm_request.clone(),
+        flow_metadata.clone(),
+    );
+
+    // 检查是否需要拦截
+    if !state
+        .flow_interceptor
+        .should_intercept(&temp_flow, &InterceptType::Request)
+        .await
+    {
+        return InterceptCheckResult::Continue(None);
+    }
+
+    state.logs.write().await.add(
+        "info",
+        &format!("[INTERCEPT] 拦截请求: flow_id={}", flow_id),
+    );
+
+    // 拦截请求
+    let _intercepted = state
+        .flow_interceptor
+        .intercept_request(flow_id, llm_request.clone())
+        .await;
+
+    // 等待用户操作
+    let action = state.flow_interceptor.wait_for_action(flow_id).await;
+
+    match action {
+        InterceptAction::Continue(modified) => {
+            state.logs.write().await.add(
+                "info",
+                &format!(
+                    "[INTERCEPT] 继续处理请求: flow_id={}, modified={}",
+                    flow_id,
+                    modified.is_some()
+                ),
+            );
+            // 如果有修改，提取修改后的请求
+            if let Some(crate::flow_monitor::ModifiedData::Request(req)) = modified {
+                InterceptCheckResult::Continue(Some(req))
+            } else {
+                InterceptCheckResult::Continue(None)
+            }
+        }
+        InterceptAction::Cancel => {
+            state.logs.write().await.add(
+                "info",
+                &format!("[INTERCEPT] 请求被取消: flow_id={}", flow_id),
+            );
+            InterceptCheckResult::Cancelled
+        }
+        InterceptAction::Timeout(timeout_action) => {
+            state.logs.write().await.add(
+                "warn",
+                &format!(
+                    "[INTERCEPT] 请求超时: flow_id={}, action={:?}",
+                    flow_id, timeout_action
+                ),
+            );
+            match timeout_action {
+                crate::flow_monitor::TimeoutAction::Continue => {
+                    InterceptCheckResult::Continue(None)
+                }
+                crate::flow_monitor::TimeoutAction::Cancel => InterceptCheckResult::Cancelled,
+            }
+        }
+    }
+}
+
+/// 检查是否需要拦截响应
+///
+/// **Validates: Requirements 2.1, 2.5**
+///
+/// 如果拦截器启用且响应匹配拦截规则，则拦截响应并等待用户操作。
+/// 返回修改后的响应（如果有）或 None。
+async fn check_response_intercept(
+    state: &AppState,
+    flow_id: &str,
+    llm_response: &LLMResponse,
+    llm_request: &LLMRequest,
+    flow_metadata: &FlowMetadata,
+) -> Option<LLMResponse> {
+    // 创建临时 Flow 用于拦截检查
+    let mut temp_flow = LLMFlow::new(
+        flow_id.to_string(),
+        FlowType::ChatCompletions,
+        llm_request.clone(),
+        flow_metadata.clone(),
+    );
+    temp_flow.response = Some(llm_response.clone());
+
+    // 检查是否需要拦截
+    if !state
+        .flow_interceptor
+        .should_intercept(&temp_flow, &InterceptType::Response)
+        .await
+    {
+        return None;
+    }
+
+    state.logs.write().await.add(
+        "info",
+        &format!("[INTERCEPT] 拦截响应: flow_id={}", flow_id),
+    );
+
+    // 拦截响应
+    let _intercepted = state
+        .flow_interceptor
+        .intercept_response(flow_id, llm_response.clone())
+        .await;
+
+    // 等待用户操作
+    let action = state.flow_interceptor.wait_for_action(flow_id).await;
+
+    match action {
+        InterceptAction::Continue(modified) => {
+            state.logs.write().await.add(
+                "info",
+                &format!(
+                    "[INTERCEPT] 继续处理响应: flow_id={}, modified={}",
+                    flow_id,
+                    modified.is_some()
+                ),
+            );
+            // 如果有修改，提取修改后的响应
+            if let Some(crate::flow_monitor::ModifiedData::Response(resp)) = modified {
+                Some(resp)
+            } else {
+                None
+            }
+        }
+        InterceptAction::Cancel | InterceptAction::Timeout(_) => {
+            state.logs.write().await.add(
+                "warn",
+                &format!("[INTERCEPT] 响应处理被取消或超时: flow_id={}", flow_id),
+            );
+            None
+        }
+    }
+}
+
+// ============================================================================
 // API Key 验证
 // ============================================================================
 
@@ -509,8 +680,36 @@ pub async fn chat_completions(
         );
         let flow_id = state
             .flow_monitor
-            .start_flow(llm_request, flow_metadata)
+            .start_flow(llm_request.clone(), flow_metadata.clone())
             .await;
+
+        // 检查是否需要拦截请求
+        // **Validates: Requirements 2.1, 2.3, 2.5**
+        if let Some(ref fid) = flow_id {
+            match check_request_intercept(&state, fid, &llm_request, &flow_metadata).await {
+                InterceptCheckResult::Continue(modified_request) => {
+                    // 如果有修改后的请求，更新请求
+                    if let Some(modified) = modified_request {
+                        // 从修改后的 LLMRequest 更新 ChatCompletionRequest
+                        if let Ok(updated) = serde_json::from_value(modified.body.clone()) {
+                            request = updated;
+                        }
+                    }
+                }
+                InterceptCheckResult::Cancelled => {
+                    // 请求被取消，标记 Flow 失败并返回错误
+                    let error = FlowError::new(FlowErrorType::Cancelled, "请求被用户取消");
+                    state.flow_monitor.fail_flow(fid, error).await;
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(
+                            serde_json::json!({"error": {"message": "Request cancelled by user"}}),
+                        ),
+                    )
+                        .into_response();
+                }
+            }
+        }
 
         let response = call_provider_openai(&state, &cred, &request, flow_id.as_deref()).await;
 
@@ -546,7 +745,8 @@ pub async fn chat_completions(
             );
         }
 
-        // 完成 Flow 捕获
+        // 完成 Flow 捕获并检查响应拦截
+        // **Validates: Requirements 2.1, 2.5**
         if let Some(fid) = flow_id {
             if is_success {
                 let llm_response = build_llm_response(
@@ -554,6 +754,60 @@ pub async fn chat_completions(
                     "", // 内容在 provider_calls 中处理
                     Some((estimated_input_tokens, estimated_output_tokens)),
                 );
+
+                // 检查是否需要拦截响应
+                if let Some(modified_response) = check_response_intercept(
+                    &state,
+                    &fid,
+                    &llm_response,
+                    &llm_request,
+                    &flow_metadata,
+                )
+                .await
+                {
+                    // 响应被修改，需要重新构建响应
+                    state
+                        .logs
+                        .write()
+                        .await
+                        .add("info", &format!("[INTERCEPT] 响应被修改: flow_id={}", fid));
+
+                    // 使用修改后的响应完成 Flow
+                    state
+                        .flow_monitor
+                        .complete_flow(&fid, Some(modified_response.clone()))
+                        .await;
+
+                    // 构建修改后的 HTTP 响应
+                    // 注意：这里简化处理，实际应该根据修改后的内容重新构建完整响应
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                            "object": "chat.completion",
+                            "created": std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                            "model": request.model,
+                            "choices": [{
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": modified_response.content
+                                },
+                                "finish_reason": "stop"
+                            }],
+                            "usage": {
+                                "prompt_tokens": modified_response.usage.input_tokens,
+                                "completion_tokens": modified_response.usage.output_tokens,
+                                "total_tokens": modified_response.usage.total_tokens
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+
                 state
                     .flow_monitor
                     .complete_flow(&fid, Some(llm_response))
@@ -585,8 +839,33 @@ pub async fn chat_completions(
     let flow_metadata = build_flow_metadata(provider, None, None, &headers, &ctx.request_id);
     let flow_id = state
         .flow_monitor
-        .start_flow(llm_request, flow_metadata)
+        .start_flow(llm_request.clone(), flow_metadata.clone())
         .await;
+
+    // 检查是否需要拦截请求（legacy mode）
+    // **Validates: Requirements 2.1, 2.3, 2.5**
+    if let Some(ref fid) = flow_id {
+        match check_request_intercept(&state, fid, &llm_request, &flow_metadata).await {
+            InterceptCheckResult::Continue(modified_request) => {
+                // 如果有修改后的请求，更新请求
+                if let Some(modified) = modified_request {
+                    if let Ok(updated) = serde_json::from_value(modified.body.clone()) {
+                        request = updated;
+                    }
+                }
+            }
+            InterceptCheckResult::Cancelled => {
+                // 请求被取消，标记 Flow 失败并返回错误
+                let error = FlowError::new(FlowErrorType::Cancelled, "请求被用户取消");
+                state.flow_monitor.fail_flow(fid, error).await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": {"message": "Request cancelled by user"}})),
+                )
+                    .into_response();
+            }
+        }
+    }
 
     // 检查是否需要刷新 token（无 token 或即将过期）
     {
@@ -709,13 +988,66 @@ pub async fn chat_completions(
                             Some(estimated_input_tokens),
                             Some(estimated_output_tokens),
                         );
-                        // 完成 Flow 捕获
+                        // 完成 Flow 捕获并检查响应拦截
+                        // **Validates: Requirements 2.1, 2.5**
                         if let Some(fid) = &flow_id {
                             let llm_response = build_llm_response(
                                 200,
                                 &parsed.content,
                                 Some((estimated_input_tokens, estimated_output_tokens)),
                             );
+
+                            // 检查是否需要拦截响应
+                            if let Some(modified_response) = check_response_intercept(
+                                &state,
+                                fid,
+                                &llm_response,
+                                &llm_request,
+                                &flow_metadata,
+                            )
+                            .await
+                            {
+                                // 响应被修改，需要重新构建响应
+                                state.logs.write().await.add(
+                                    "info",
+                                    &format!("[INTERCEPT] 响应被修改: flow_id={}", fid),
+                                );
+
+                                // 使用修改后的响应完成 Flow
+                                state
+                                    .flow_monitor
+                                    .complete_flow(fid, Some(modified_response.clone()))
+                                    .await;
+
+                                // 构建修改后的响应
+                                let modified_message = serde_json::json!({
+                                    "role": "assistant",
+                                    "content": modified_response.content
+                                });
+
+                                let modified_json_response = serde_json::json!({
+                                    "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                                    "object": "chat.completion",
+                                    "created": std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs(),
+                                    "model": request.model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "message": modified_message,
+                                        "finish_reason": "stop"
+                                    }],
+                                    "usage": {
+                                        "prompt_tokens": modified_response.usage.input_tokens,
+                                        "completion_tokens": modified_response.usage.output_tokens,
+                                        "total_tokens": modified_response.usage.total_tokens
+                                    }
+                                });
+
+                                return Json(modified_json_response).into_response();
+                            }
+
                             state
                                 .flow_monitor
                                 .complete_flow(fid, Some(llm_response))
@@ -823,10 +1155,71 @@ pub async fn chat_completions(
                                                     "total_tokens": 0
                                                 }
                                             });
-                                            // 完成 Flow 捕获（重试成功）
+                                            // 完成 Flow 捕获并检查响应拦截（重试成功）
+                                            // **Validates: Requirements 2.1, 2.5**
                                             if let Some(fid) = &flow_id {
                                                 let llm_response =
                                                     build_llm_response(200, &parsed.content, None);
+
+                                                // 检查是否需要拦截响应
+                                                if let Some(modified_response) =
+                                                    check_response_intercept(
+                                                        &state,
+                                                        fid,
+                                                        &llm_response,
+                                                        &llm_request,
+                                                        &flow_metadata,
+                                                    )
+                                                    .await
+                                                {
+                                                    // 响应被修改，需要重新构建响应
+                                                    state.logs.write().await.add(
+                                                        "info",
+                                                        &format!(
+                                                            "[INTERCEPT] 响应被修改: flow_id={}",
+                                                            fid
+                                                        ),
+                                                    );
+
+                                                    // 使用修改后的响应完成 Flow
+                                                    state
+                                                        .flow_monitor
+                                                        .complete_flow(
+                                                            fid,
+                                                            Some(modified_response.clone()),
+                                                        )
+                                                        .await;
+
+                                                    // 构建修改后的响应
+                                                    let modified_message = serde_json::json!({
+                                                        "role": "assistant",
+                                                        "content": modified_response.content
+                                                    });
+
+                                                    let modified_json_response = serde_json::json!({
+                                                        "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                                                        "object": "chat.completion",
+                                                        "created": std::time::SystemTime::now()
+                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                            .unwrap_or_default()
+                                                            .as_secs(),
+                                                        "model": request.model,
+                                                        "choices": [{
+                                                            "index": 0,
+                                                            "message": modified_message,
+                                                            "finish_reason": "stop"
+                                                        }],
+                                                        "usage": {
+                                                            "prompt_tokens": modified_response.usage.input_tokens,
+                                                            "completion_tokens": modified_response.usage.output_tokens,
+                                                            "total_tokens": modified_response.usage.total_tokens
+                                                        }
+                                                    });
+
+                                                    return Json(modified_json_response)
+                                                        .into_response();
+                                                }
+
                                                 state
                                                     .flow_monitor
                                                     .complete_flow(fid, Some(llm_response))
@@ -1079,8 +1472,40 @@ pub async fn anthropic_messages(
         );
         let flow_id = state
             .flow_monitor
-            .start_flow(llm_request, flow_metadata)
+            .start_flow(llm_request.clone(), flow_metadata.clone())
             .await;
+
+        // 检查是否需要拦截请求
+        // **Validates: Requirements 2.1, 2.3, 2.5**
+        if let Some(ref fid) = flow_id {
+            match check_request_intercept(&state, fid, &llm_request, &flow_metadata).await {
+                InterceptCheckResult::Continue(modified_request) => {
+                    // 如果有修改后的请求，更新请求
+                    if let Some(modified) = modified_request {
+                        // 从修改后的 LLMRequest 更新 AnthropicMessagesRequest
+                        if let Ok(updated) = serde_json::from_value(modified.body.clone()) {
+                            request = updated;
+                        }
+                    }
+                }
+                InterceptCheckResult::Cancelled => {
+                    // 请求被取消，标记 Flow 失败并返回错误
+                    let error = FlowError::new(FlowErrorType::Cancelled, "请求被用户取消");
+                    state.flow_monitor.fail_flow(fid, error).await;
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "type": "error",
+                            "error": {
+                                "type": "request_cancelled",
+                                "message": "Request cancelled by user"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
 
         let response = call_provider_anthropic(&state, &cred, &request, flow_id.as_deref()).await;
 
@@ -1121,7 +1546,8 @@ pub async fn anthropic_messages(
             );
         }
 
-        // 完成 Flow 捕获
+        // 完成 Flow 捕获并检查响应拦截
+        // **Validates: Requirements 2.1, 2.5**
         if let Some(fid) = flow_id {
             if is_success {
                 let llm_response = build_llm_response(
@@ -1129,6 +1555,53 @@ pub async fn anthropic_messages(
                     "",
                     Some((estimated_input_tokens, estimated_output_tokens)),
                 );
+
+                // 检查是否需要拦截响应
+                if let Some(modified_response) = check_response_intercept(
+                    &state,
+                    &fid,
+                    &llm_response,
+                    &llm_request,
+                    &flow_metadata,
+                )
+                .await
+                {
+                    // 响应被修改，需要重新构建响应
+                    state
+                        .logs
+                        .write()
+                        .await
+                        .add("info", &format!("[INTERCEPT] 响应被修改: flow_id={}", fid));
+
+                    // 使用修改后的响应完成 Flow
+                    state
+                        .flow_monitor
+                        .complete_flow(&fid, Some(modified_response.clone()))
+                        .await;
+
+                    // 构建修改后的 Anthropic 格式响应
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "id": format!("msg_{}", uuid::Uuid::new_v4()),
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{
+                                "type": "text",
+                                "text": modified_response.content
+                            }],
+                            "model": request.model,
+                            "stop_reason": "end_turn",
+                            "stop_sequence": null,
+                            "usage": {
+                                "input_tokens": modified_response.usage.input_tokens,
+                                "output_tokens": modified_response.usage.output_tokens
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+
                 state
                     .flow_monitor
                     .complete_flow(&fid, Some(llm_response))
@@ -1160,8 +1633,39 @@ pub async fn anthropic_messages(
     let flow_metadata = build_flow_metadata(provider, None, None, &headers, &ctx.request_id);
     let flow_id = state
         .flow_monitor
-        .start_flow(llm_request, flow_metadata)
+        .start_flow(llm_request.clone(), flow_metadata.clone())
         .await;
+
+    // 检查是否需要拦截请求（legacy mode）
+    // **Validates: Requirements 2.1, 2.3, 2.5**
+    if let Some(ref fid) = flow_id {
+        match check_request_intercept(&state, fid, &llm_request, &flow_metadata).await {
+            InterceptCheckResult::Continue(modified_request) => {
+                // 如果有修改后的请求，更新请求
+                if let Some(modified) = modified_request {
+                    if let Ok(updated) = serde_json::from_value(modified.body.clone()) {
+                        request = updated;
+                    }
+                }
+            }
+            InterceptCheckResult::Cancelled => {
+                // 请求被取消，标记 Flow 失败并返回错误
+                let error = FlowError::new(FlowErrorType::Cancelled, "请求被用户取消");
+                state.flow_monitor.fail_flow(fid, error).await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "type": "error",
+                        "error": {
+                            "type": "request_cancelled",
+                            "message": "Request cancelled by user"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
 
     // 检查是否需要刷新 token（无 token 或即将过期）
     {
@@ -1282,9 +1786,57 @@ pub async fn anthropic_messages(
 
                         // 如果请求流式响应，返回 SSE 格式
                         if request.stream {
-                            // 完成 Flow 捕获
+                            // 完成 Flow 捕获并检查响应拦截（流式）
+                            // **Validates: Requirements 2.1, 2.5**
                             if let Some(fid) = &flow_id {
                                 let llm_response = build_llm_response(200, &parsed.content, None);
+
+                                // 检查是否需要拦截响应
+                                if let Some(modified_response) = check_response_intercept(
+                                    &state,
+                                    fid,
+                                    &llm_response,
+                                    &llm_request,
+                                    &flow_metadata,
+                                )
+                                .await
+                                {
+                                    // 响应被修改，需要重新构建响应
+                                    state.logs.write().await.add(
+                                        "info",
+                                        &format!("[INTERCEPT] 流式响应被修改: flow_id={}", fid),
+                                    );
+
+                                    // 使用修改后的响应完成 Flow
+                                    state
+                                        .flow_monitor
+                                        .complete_flow(fid, Some(modified_response.clone()))
+                                        .await;
+
+                                    // 构建修改后的流式响应
+                                    // 注意：这里简化处理，实际应该构建完整的流式响应
+                                    return (
+                                        StatusCode::OK,
+                                        Json(serde_json::json!({
+                                            "id": format!("msg_{}", uuid::Uuid::new_v4()),
+                                            "type": "message",
+                                            "role": "assistant",
+                                            "content": [{
+                                                "type": "text",
+                                                "text": modified_response.content
+                                            }],
+                                            "model": request.model,
+                                            "stop_reason": "end_turn",
+                                            "stop_sequence": null,
+                                            "usage": {
+                                                "input_tokens": modified_response.usage.input_tokens,
+                                                "output_tokens": modified_response.usage.output_tokens
+                                            }
+                                        })),
+                                    )
+                                        .into_response();
+                                }
+
                                 state
                                     .flow_monitor
                                     .complete_flow(fid, Some(llm_response))
@@ -1293,9 +1845,56 @@ pub async fn anthropic_messages(
                             return build_anthropic_stream_response(&request.model, &parsed);
                         }
 
-                        // 完成 Flow 捕获
+                        // 完成 Flow 捕获并检查响应拦截（非流式）
+                        // **Validates: Requirements 2.1, 2.5**
                         if let Some(fid) = &flow_id {
                             let llm_response = build_llm_response(200, &parsed.content, None);
+
+                            // 检查是否需要拦截响应
+                            if let Some(modified_response) = check_response_intercept(
+                                &state,
+                                fid,
+                                &llm_response,
+                                &llm_request,
+                                &flow_metadata,
+                            )
+                            .await
+                            {
+                                // 响应被修改，需要重新构建响应
+                                state.logs.write().await.add(
+                                    "info",
+                                    &format!("[INTERCEPT] 响应被修改: flow_id={}", fid),
+                                );
+
+                                // 使用修改后的响应完成 Flow
+                                state
+                                    .flow_monitor
+                                    .complete_flow(fid, Some(modified_response.clone()))
+                                    .await;
+
+                                // 构建修改后的 Anthropic 格式响应
+                                return (
+                                    StatusCode::OK,
+                                    Json(serde_json::json!({
+                                        "id": format!("msg_{}", uuid::Uuid::new_v4()),
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": [{
+                                            "type": "text",
+                                            "text": modified_response.content
+                                        }],
+                                        "model": request.model,
+                                        "stop_reason": "end_turn",
+                                        "stop_sequence": null,
+                                        "usage": {
+                                            "input_tokens": modified_response.usage.input_tokens,
+                                            "output_tokens": modified_response.usage.output_tokens
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+
                             state
                                 .flow_monitor
                                 .complete_flow(fid, Some(llm_response))
@@ -1371,10 +1970,84 @@ pub async fn anthropic_messages(
                                                 parsed.content.len(), parsed.tool_calls.len()
                                             ),
                                             );
-                                            // 完成 Flow 捕获（重试成功）
+                                            // 完成 Flow 捕获并检查响应拦截（重试成功）
+                                            // **Validates: Requirements 2.1, 2.5**
                                             if let Some(fid) = &flow_id {
                                                 let llm_response =
                                                     build_llm_response(200, &parsed.content, None);
+
+                                                // 检查是否需要拦截响应
+                                                if let Some(modified_response) =
+                                                    check_response_intercept(
+                                                        &state,
+                                                        fid,
+                                                        &llm_response,
+                                                        &llm_request,
+                                                        &flow_metadata,
+                                                    )
+                                                    .await
+                                                {
+                                                    // 响应被修改，需要重新构建响应
+                                                    state.logs.write().await.add(
+                                                        "info",
+                                                        &format!("[INTERCEPT] 重试响应被修改: flow_id={}", fid),
+                                                    );
+
+                                                    // 使用修改后的响应完成 Flow
+                                                    state
+                                                        .flow_monitor
+                                                        .complete_flow(
+                                                            fid,
+                                                            Some(modified_response.clone()),
+                                                        )
+                                                        .await;
+
+                                                    // 构建修改后的响应
+                                                    if request.stream {
+                                                        return (
+                                                            StatusCode::OK,
+                                                            Json(serde_json::json!({
+                                                                "id": format!("msg_{}", uuid::Uuid::new_v4()),
+                                                                "type": "message",
+                                                                "role": "assistant",
+                                                                "content": [{
+                                                                    "type": "text",
+                                                                    "text": modified_response.content
+                                                                }],
+                                                                "model": request.model,
+                                                                "stop_reason": "end_turn",
+                                                                "stop_sequence": null,
+                                                                "usage": {
+                                                                    "input_tokens": modified_response.usage.input_tokens,
+                                                                    "output_tokens": modified_response.usage.output_tokens
+                                                                }
+                                                            })),
+                                                        )
+                                                            .into_response();
+                                                    } else {
+                                                        return (
+                                                            StatusCode::OK,
+                                                            Json(serde_json::json!({
+                                                                "id": format!("msg_{}", uuid::Uuid::new_v4()),
+                                                                "type": "message",
+                                                                "role": "assistant",
+                                                                "content": [{
+                                                                    "type": "text",
+                                                                    "text": modified_response.content
+                                                                }],
+                                                                "model": request.model,
+                                                                "stop_reason": "end_turn",
+                                                                "stop_sequence": null,
+                                                                "usage": {
+                                                                    "input_tokens": modified_response.usage.input_tokens,
+                                                                    "output_tokens": modified_response.usage.output_tokens
+                                                                }
+                                                            })),
+                                                        )
+                                                            .into_response();
+                                                    }
+                                                }
+
                                                 state
                                                     .flow_monitor
                                                     .complete_flow(fid, Some(llm_response))

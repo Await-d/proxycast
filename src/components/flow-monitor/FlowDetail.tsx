@@ -58,6 +58,8 @@ export function FlowDetail({ flowId, onBack, onExport }: FlowDetailProps) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(["messages", "content", "toolCalls"]),
   );
+  // 代码模式：显示原始 JSON
+  const [codeMode, setCodeMode] = useState(false);
 
   // 使用 Flow 操作 Hook
   const {
@@ -183,87 +185,125 @@ export function FlowDetail({ flowId, onBack, onExport }: FlowDetailProps) {
         onBack={onBack}
         onToggleStar={handleToggleStar}
         onExport={handleExport}
-        onCopyId={() => handleCopyContent(flow.id, "Flow ID")}
+        onCopyAll={() => copyFlowContent(flow)}
         getStateIcon={getStateIcon}
+        codeMode={codeMode}
+        onToggleCodeMode={() => setCodeMode(!codeMode)}
       />
 
-      {/* 标签页 */}
-      <div className="flex border-b">
-        <TabButton
-          active={activeTab === "request"}
-          onClick={() => setActiveTab("request")}
-        >
-          请求
-        </TabButton>
-        <TabButton
-          active={activeTab === "response"}
-          onClick={() => setActiveTab("response")}
-        >
-          响应
-        </TabButton>
-        <TabButton
-          active={activeTab === "metadata"}
-          onClick={() => setActiveTab("metadata")}
-        >
-          元数据
-        </TabButton>
-        <TabButton
-          active={activeTab === "timeline"}
-          onClick={() => setActiveTab("timeline")}
-        >
-          时间线
-        </TabButton>
-
-        {/* 快捷复制按钮 */}
-        <div className="ml-auto flex items-center gap-1 px-2">
-          <button
-            onClick={() => copyRequest(flow)}
-            className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-            title="复制请求"
-          >
-            <Copy className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => copyResponse(flow)}
-            className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-            title="复制响应"
-            disabled={!flow.response}
-          >
-            <Download className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => copyFlowContent(flow)}
-            className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-            title="复制完整 JSON"
-          >
-            <FileJson className="h-4 w-4" />
-          </button>
+      {/* 代码模式：显示原始 JSON */}
+      {codeMode ? (
+        <div className="rounded-lg border bg-card">
+          <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
+            <span className="text-sm font-medium">原始 JSON</span>
+            <button
+              onClick={() => copyFlowContent(flow)}
+              className="p-1.5 rounded hover:bg-muted"
+              title="复制 JSON"
+            >
+              <Copy className="h-4 w-4 text-muted-foreground" />
+            </button>
+          </div>
+          <pre className="p-4 text-xs font-mono whitespace-pre-wrap break-words max-h-[70vh] overflow-y-auto">
+            {JSON.stringify(flow, null, 2)}
+          </pre>
         </div>
-      </div>
+      ) : (
+        <>
+          {/* 标签页 */}
+          <div className="flex border-b">
+            <TabButton
+              active={activeTab === "request"}
+              onClick={() => setActiveTab("request")}
+            >
+              请求
+            </TabButton>
+            <TabButton
+              active={activeTab === "response"}
+              onClick={() => setActiveTab("response")}
+            >
+              响应
+            </TabButton>
+            <TabButton
+              active={activeTab === "metadata"}
+              onClick={() => setActiveTab("metadata")}
+            >
+              元数据
+            </TabButton>
+            <TabButton
+              active={activeTab === "timeline"}
+              onClick={() => setActiveTab("timeline")}
+            >
+              时间线
+            </TabButton>
 
-      {/* 内容区域 */}
-      <div className="space-y-4">
-        {activeTab === "request" && (
-          <RequestTab
-            flow={flow}
-            expandedSections={expandedSections}
-            toggleSection={toggleSection}
-            onCopy={handleCopyContent}
-          />
-        )}
-        {activeTab === "response" && (
-          <ResponseTab
-            flow={flow}
-            expandedSections={expandedSections}
-            toggleSection={toggleSection}
-            onCopy={handleCopyContent}
-          />
-        )}
-        {activeTab === "metadata" && (
-          <MetadataTab flow={flow} onCopy={handleCopyContent} />
-        )}
-        {activeTab === "timeline" && <FlowTimeline flow={flow} />}
-      </div>
+            {/* 快捷复制按钮 */}
+            <div className="ml-auto flex items-center gap-1 px-2">
+              <button
+                onClick={async () => {
+                  console.log("复制请求按钮被点击");
+                  const result = await copyRequest(flow);
+                  console.log("复制结果:", result);
+                }}
+                className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
+                title="复制请求"
+                type="button"
+              >
+                <Copy className="h-4 w-4" />
+              </button>
+              <button
+                onClick={async () => {
+                  console.log("复制响应按钮被点击");
+                  const result = await copyResponse(flow);
+                  console.log("复制结果:", result);
+                }}
+                className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                title="复制响应"
+                disabled={!flow.response}
+                type="button"
+              >
+                <Download className="h-4 w-4" />
+              </button>
+              <button
+                onClick={async () => {
+                  console.log("复制完整 JSON 按钮被点击");
+                  const result = await copyFlowContent(flow);
+                  console.log("复制结果:", result);
+                }}
+                className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
+                title="复制完整 JSON"
+                type="button"
+              >
+                <FileJson className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* 内容区域 */}
+          <div className="space-y-4">
+            {activeTab === "request" && (
+              <RequestTab
+                flow={flow}
+                expandedSections={expandedSections}
+                toggleSection={toggleSection}
+                onCopy={handleCopyContent}
+              />
+            )}
+            {activeTab === "response" && (
+              <ResponseTab
+                flow={flow}
+                expandedSections={expandedSections}
+                toggleSection={toggleSection}
+                onCopy={handleCopyContent}
+              />
+            )}
+            {activeTab === "metadata" && (
+              <MetadataTab flow={flow} onCopy={handleCopyContent} />
+            )}
+            {activeTab === "timeline" && <FlowTimeline flow={flow} />}
+          </div>
+        </>
+      )}
 
       {/* 导出状态提示 */}
       {exporting && (
@@ -285,8 +325,10 @@ interface FlowDetailHeaderProps {
   onBack?: () => void;
   onToggleStar: () => void;
   onExport: (format: ExportFormat) => void;
-  onCopyId: () => void;
+  onCopyAll: () => void;
   getStateIcon: (state: FlowState) => React.ReactNode;
+  codeMode: boolean;
+  onToggleCodeMode: () => void;
 }
 
 function FlowDetailHeader({
@@ -294,8 +336,10 @@ function FlowDetailHeader({
   onBack,
   onToggleStar,
   onExport,
-  onCopyId,
+  onCopyAll,
   getStateIcon,
+  codeMode,
+  onToggleCodeMode,
 }: FlowDetailHeaderProps) {
   const [showExportMenu, setShowExportMenu] = useState(false);
 
@@ -324,6 +368,17 @@ function FlowDetailHeader({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* 代码模式切换 */}
+          <button
+            onClick={onToggleCodeMode}
+            className={cn(
+              "p-1.5 rounded hover:bg-muted",
+              codeMode ? "bg-muted text-primary" : "text-muted-foreground",
+            )}
+            title={codeMode ? "切换到格式化视图" : "切换到代码视图"}
+          >
+            <Code className="h-5 w-5" />
+          </button>
           <button
             onClick={onToggleStar}
             className="p-1.5 rounded hover:bg-muted"
@@ -336,9 +391,9 @@ function FlowDetailHeader({
             )}
           </button>
           <button
-            onClick={onCopyId}
+            onClick={onCopyAll}
             className="p-1.5 rounded hover:bg-muted"
-            title="复制 Flow ID"
+            title="复制完整 JSON"
           >
             <Copy className="h-5 w-5 text-muted-foreground" />
           </button>

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::flow_monitor::models::FlowError;
-use crate::flow_monitor::monitor::{FlowEvent, FlowSummary, FlowUpdate};
+use crate::flow_monitor::monitor::{
+    FlowEvent, FlowSummary, FlowUpdate, NotificationEvent, ThresholdCheckResult,
+};
 
 /// WebSocket 连接信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,6 +341,15 @@ pub enum WsFlowEvent {
     FlowCompleted { id: String, summary: FlowSummary },
     /// Flow 失败
     FlowFailed { id: String, error: FlowError },
+    /// 阈值警告
+    ThresholdWarning {
+        id: String,
+        result: ThresholdCheckResult,
+    },
+    /// 通知事件
+    Notification { notification: NotificationEvent },
+    /// 请求速率更新
+    RequestRateUpdate { rate: f64, count: usize },
 }
 
 impl From<FlowEvent> for WsFlowEvent {
@@ -348,6 +359,13 @@ impl From<FlowEvent> for WsFlowEvent {
             FlowEvent::FlowUpdated { id, update } => WsFlowEvent::FlowUpdated { id, update },
             FlowEvent::FlowCompleted { id, summary } => WsFlowEvent::FlowCompleted { id, summary },
             FlowEvent::FlowFailed { id, error } => WsFlowEvent::FlowFailed { id, error },
+            FlowEvent::ThresholdWarning { id, result } => {
+                WsFlowEvent::ThresholdWarning { id, result }
+            }
+            FlowEvent::Notification { notification } => WsFlowEvent::Notification { notification },
+            FlowEvent::RequestRateUpdate { rate, count } => {
+                WsFlowEvent::RequestRateUpdate { rate, count }
+            }
         }
     }
 }

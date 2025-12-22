@@ -397,6 +397,7 @@ export interface FlowFilter {
   starred_only?: boolean;
   credential_id?: string;
   flow_types?: FlowType[];
+  filter_expression?: string;
 }
 
 /**
@@ -496,6 +497,11 @@ export interface FlowStats {
 export type ExportFormat = "har" | "json" | "jsonl" | "markdown" | "csv";
 
 /**
+ * 代码导出格式
+ */
+export type CodeExportFormat = "curl" | "python" | "typescript" | "javascript";
+
+/**
  * 脱敏规则
  */
 export interface RedactionRule {
@@ -585,7 +591,62 @@ export type FlowEvent =
   | { type: "FlowStarted"; flow: FlowSummary }
   | { type: "FlowUpdated"; id: string; update: FlowUpdate }
   | { type: "FlowCompleted"; id: string; summary: FlowSummary }
-  | { type: "FlowFailed"; id: string; error: FlowError };
+  | { type: "FlowFailed"; id: string; error: FlowError }
+  | { type: "ThresholdWarning"; id: string; result: ThresholdCheckResult };
+
+/**
+ * 阈值检测结果（用于事件）
+ */
+export interface ThresholdCheckResult {
+  /** 是否超过延迟阈值 */
+  latency_exceeded: boolean;
+  /** 是否超过 Token 阈值 */
+  token_exceeded: boolean;
+  /** 是否超过输入 Token 阈值 */
+  input_token_exceeded: boolean;
+  /** 是否超过输出 Token 阈值 */
+  output_token_exceeded: boolean;
+  /** 实际延迟（毫秒） */
+  actual_latency_ms: number;
+  /** 实际 Token 使用量 */
+  actual_tokens: number;
+  /** 实际输入 Token */
+  actual_input_tokens: number;
+  /** 实际输出 Token */
+  actual_output_tokens: number;
+}
+
+// ============================================================================
+// 内部辅助函数（在 API 对象之前定义）
+// ============================================================================
+
+/**
+ * 获取导出格式的文件扩展名
+ */
+function getFormatExtension(format: ExportFormat): string {
+  const extMap: Record<ExportFormat, string> = {
+    json: "json",
+    jsonl: "jsonl",
+    har: "har",
+    markdown: "md",
+    csv: "csv",
+  };
+  return extMap[format] || "txt";
+}
+
+/**
+ * 获取导出格式的 MIME 类型
+ */
+function getFormatMimeType(format: ExportFormat): string {
+  const mimeMap: Record<ExportFormat, string> = {
+    json: "application/json",
+    jsonl: "application/x-ndjson",
+    har: "application/json",
+    markdown: "text/markdown",
+    csv: "text/csv",
+  };
+  return mimeMap[format] || "text/plain";
+}
 
 // ============================================================================
 // API 接口
@@ -668,7 +729,11 @@ export const flowMonitorApi = {
    */
   async exportFlows(options: ExportOptions): Promise<ExportResult> {
     // 后端期望 request: ExportFlowsRequest 格式
-    return invoke("export_flows", {
+    const response = await invoke<{
+      data: string;
+      count: number;
+      format: ExportFormat;
+    }>("export_flows", {
       request: {
         format: options.format,
         filter: options.filter,
@@ -678,6 +743,18 @@ export const flowMonitorApi = {
         flow_ids: null,
       },
     });
+
+    // 生成文件名
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const ext = getFormatExtension(options.format);
+    const filename = `flows_${timestamp}.${ext}`;
+    const mimeType = getFormatMimeType(options.format);
+
+    return {
+      data: response.data,
+      filename,
+      mime_type: mimeType,
+    };
   },
 
   /**
@@ -826,7 +903,33 @@ export const flowMonitorApi = {
     ids: string[],
     options: Omit<ExportOptions, "filter">,
   ): Promise<ExportResult> {
-    return invoke("export_flows_by_ids", { ids, options });
+    // 使用 export_flows 命令，传入 flow_ids 参数
+    const response = await invoke<{
+      data: string;
+      count: number;
+      format: ExportFormat;
+    }>("export_flows", {
+      request: {
+        format: options.format,
+        filter: null,
+        include_raw: options.include_raw ?? true,
+        include_stream_chunks: options.include_stream_chunks ?? false,
+        redact_sensitive: options.redact_sensitive ?? false,
+        flow_ids: ids,
+      },
+    });
+
+    // 生成文件名
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const ext = getFormatExtension(options.format);
+    const filename = `flows_${timestamp}.${ext}`;
+    const mimeType = getFormatMimeType(options.format);
+
+    return {
+      data: response.data,
+      filename,
+      mime_type: mimeType,
+    };
   },
 
   /**
@@ -848,10 +951,33 @@ export const flowMonitorApi = {
   async deleteFlows(ids: string[]): Promise<number> {
     return invoke("delete_flows", { ids });
   },
+
+  /**
+   * 将 Flow 导出为代码
+   *
+   * @param flowId - Flow ID
+   * @param format - 代码格式 (curl, python, typescript, javascript)
+   * @returns 导出的代码
+   */
+  async exportFlowAsCode(
+    flowId: string,
+    format: CodeExportFormat,
+  ): Promise<string> {
+    const response = await invoke<{ code: string; format: CodeExportFormat }>(
+      "export_flow_as_code",
+      {
+        request: {
+          flow_id: flowId,
+          format,
+        },
+      },
+    );
+    return response.code;
+  },
 };
 
 // ============================================================================
-// 辅助函数
+// 导出的辅助函数
 // ============================================================================
 
 /**
@@ -996,4 +1122,265 @@ export function mergeFilters(...filters: FlowFilter[]): FlowFilter {
   return filters.reduce((acc, filter) => ({ ...acc, ...filter }), {});
 }
 
+// ============================================================================
+// 增强统计类型
+// ============================================================================
+
+/**
+ * 时间序列数据点
+ */
+export interface TimeSeriesPoint {
+  timestamp: string;
+  value: number;
+}
+
+/**
+ * 分布数据
+ */
+export interface Distribution {
+  buckets: [string, number][];
+  total: number;
+}
+
+/**
+ * 趋势数据
+ */
+export interface TrendData {
+  points: TimeSeriesPoint[];
+  interval: string;
+}
+
+/**
+ * 统计时间范围
+ */
+export interface StatsTimeRange {
+  start: string;
+  end: string;
+}
+
+/**
+ * 增强统计结果
+ */
+export interface EnhancedStats {
+  request_trend: TrendData;
+  token_by_model: Distribution;
+  success_by_provider: [string, number][];
+  latency_histogram: Distribution;
+  error_distribution: Distribution;
+  request_rate: number;
+  time_range: StatsTimeRange;
+}
+
+/**
+ * 报告格式
+ */
+export type ReportFormat = "json" | "markdown" | "csv";
+
+/**
+ * 增强统计 API
+ */
+export const enhancedStatsApi = {
+  /**
+   * 获取增强统计
+   *
+   * @param filter - 过滤条件
+   * @param timeRange - 时间范围
+   * @returns 增强统计结果
+   */
+  async getEnhancedStats(
+    filter: FlowFilter = {},
+    timeRange?: StatsTimeRange,
+  ): Promise<EnhancedStats> {
+    const now = new Date();
+    const defaultTimeRange: StatsTimeRange = {
+      start: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      end: now.toISOString(),
+    };
+    return invoke("get_enhanced_stats", {
+      request: {
+        filter,
+        time_range: timeRange || defaultTimeRange,
+      },
+    });
+  },
+
+  /**
+   * 获取请求趋势
+   *
+   * @param filter - 过滤条件
+   * @param timeRange - 时间范围
+   * @param interval - 时间间隔（如 "1h", "30m", "1d"）
+   * @returns 趋势数据
+   */
+  async getRequestTrend(
+    filter: FlowFilter = {},
+    timeRange?: StatsTimeRange,
+    interval: string = "1h",
+  ): Promise<TrendData> {
+    const now = new Date();
+    const defaultTimeRange: StatsTimeRange = {
+      start: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      end: now.toISOString(),
+    };
+    return invoke("get_request_trend", {
+      request: {
+        filter,
+        time_range: timeRange || defaultTimeRange,
+        interval,
+      },
+    });
+  },
+
+  /**
+   * 获取 Token 分布
+   *
+   * @param filter - 过滤条件
+   * @param timeRange - 时间范围
+   * @returns Token 分布数据
+   */
+  async getTokenDistribution(
+    filter: FlowFilter = {},
+    timeRange?: StatsTimeRange,
+  ): Promise<Distribution> {
+    const now = new Date();
+    const defaultTimeRange: StatsTimeRange = {
+      start: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      end: now.toISOString(),
+    };
+    return invoke("get_token_distribution", {
+      request: {
+        filter,
+        time_range: timeRange || defaultTimeRange,
+      },
+    });
+  },
+
+  /**
+   * 获取延迟直方图
+   *
+   * @param filter - 过滤条件
+   * @param timeRange - 时间范围
+   * @param buckets - 直方图桶边界（毫秒）
+   * @returns 延迟直方图数据
+   */
+  async getLatencyHistogram(
+    filter: FlowFilter = {},
+    timeRange?: StatsTimeRange,
+    buckets: number[] = [100, 500, 1000, 2000, 5000, 10000],
+  ): Promise<Distribution> {
+    const now = new Date();
+    const defaultTimeRange: StatsTimeRange = {
+      start: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      end: now.toISOString(),
+    };
+    return invoke("get_latency_histogram", {
+      request: {
+        filter,
+        time_range: timeRange || defaultTimeRange,
+        buckets,
+      },
+    });
+  },
+
+  /**
+   * 导出统计报告
+   *
+   * @param filter - 过滤条件
+   * @param timeRange - 时间范围
+   * @param format - 报告格式
+   * @returns 格式化的报告字符串
+   */
+  async exportStatsReport(
+    filter: FlowFilter = {},
+    timeRange?: StatsTimeRange,
+    format: ReportFormat = "json",
+  ): Promise<string> {
+    const now = new Date();
+    const defaultTimeRange: StatsTimeRange = {
+      start: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      end: now.toISOString(),
+    };
+    return invoke("export_stats_report", {
+      request: {
+        filter,
+        time_range: timeRange || defaultTimeRange,
+        format,
+      },
+    });
+  },
+};
+
 export default flowMonitorApi;
+
+// ============================================================================
+// 实时监控增强类型
+// ============================================================================
+
+/**
+ * 阈值配置
+ */
+export interface ThresholdConfig {
+  /** 是否启用阈值检测 */
+  enabled: boolean;
+  /** 延迟阈值（毫秒） */
+  latency_threshold_ms: number;
+  /** Token 使用量阈值 */
+  token_threshold: number;
+  /** 输入 Token 阈值（可选） */
+  input_token_threshold?: number;
+  /** 输出 Token 阈值（可选） */
+  output_token_threshold?: number;
+}
+
+/**
+ * 请求速率响应
+ */
+export interface RequestRateResponse {
+  /** 请求速率（每秒） */
+  rate: number;
+  /** 时间窗口内的请求数量 */
+  count: number;
+  /** 时间窗口（秒） */
+  window_seconds: number;
+}
+
+/**
+ * 实时监控增强 API
+ */
+export const realtimeMonitorApi = {
+  /**
+   * 获取阈值配置
+   *
+   * @returns 阈值配置
+   */
+  async getThresholdConfig(): Promise<ThresholdConfig> {
+    return invoke("get_threshold_config");
+  },
+
+  /**
+   * 更新阈值配置
+   *
+   * @param config - 新的阈值配置
+   */
+  async updateThresholdConfig(config: ThresholdConfig): Promise<void> {
+    return invoke("update_threshold_config", { config });
+  },
+
+  /**
+   * 获取请求速率
+   *
+   * @returns 请求速率信息
+   */
+  async getRequestRate(): Promise<RequestRateResponse> {
+    return invoke("get_request_rate");
+  },
+
+  /**
+   * 设置请求速率追踪器的时间窗口
+   *
+   * @param windowSeconds - 时间窗口（秒）
+   */
+  async setRateWindow(windowSeconds: number): Promise<void> {
+    return invoke("set_rate_window", { windowSeconds });
+  },
+};
