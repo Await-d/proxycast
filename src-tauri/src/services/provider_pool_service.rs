@@ -2,6 +2,8 @@
 //!
 //! 提供凭证池的选择、健康检测、负载均衡等功能。
 
+#![allow(dead_code)]
+
 use crate::database::dao::provider_pool::ProviderPoolDao;
 use crate::database::DbConnection;
 use crate::models::provider_pool_model::{
@@ -14,7 +16,7 @@ use crate::providers::kiro::KiroProvider;
 use chrono::Utc;
 use reqwest::Client;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 /// 凭证池管理服务

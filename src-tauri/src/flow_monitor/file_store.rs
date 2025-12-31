@@ -578,7 +578,7 @@ impl FlowFileStore {
             return Ok(None);
         }
 
-        let mut flow: LLMFlow = serde_json::from_str(&line)?;
+        let flow: LLMFlow = serde_json::from_str(&line)?;
         Ok(Some(flow))
     }
 

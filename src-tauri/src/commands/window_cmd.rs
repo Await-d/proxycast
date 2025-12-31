@@ -3,7 +3,7 @@
 //! 提供窗口大小调整、位置控制等功能
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, PhysicalSize, Window};
+use tauri::{AppHandle, Manager, PhysicalSize};
 
 /// 窗口大小预设
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,6 +3,8 @@
 //! Implements OAuth authentication flow for OpenAI Codex API.
 //! Supports PKCE (Proof Key for Code Exchange) for secure authentication.
 
+#![allow(dead_code)]
+
 use super::error::{
     create_auth_error, create_config_error, create_token_refresh_error, ProviderError,
 };

@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// 大文件阈值（行数）
 const LARGE_FILE_THRESHOLD: usize = 500;

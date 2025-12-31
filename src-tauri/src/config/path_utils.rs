@@ -2,6 +2,8 @@
 //!
 //! 提供路径处理相关的工具函数，包括 tilde (~) 路径展开
 
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 /// 展开路径中的 tilde (~) 为用户主目录

@@ -3,6 +3,8 @@
 //! 根据凭证类型调用不同的 Provider API
 //!
 //! # 流式传输支持
+
+#![allow(dead_code)]
 //!
 //! 本模块支持真正的端到端流式传输，通过以下组件实现：
 //! - `StreamManager`: 管理流式请求的生命周期
@@ -760,7 +762,7 @@ pub async fn call_provider_openai(
     state: &AppState,
     credential: &ProviderCredential,
     request: &ChatCompletionRequest,
-    flow_id: Option<&str>,
+    _flow_id: Option<&str>,
 ) -> Response {
     let _start_time = std::time::Instant::now();
     match &credential.credential {
@@ -823,6 +825,130 @@ pub async fn call_provider_openai(
             let _ = kiro.load_credentials_from_path(creds_file_path).await;
             // 使用缓存的 token 覆盖文件中的 token（缓存的 token 更新）
             kiro.credentials.access_token = Some(token);
+
+            tracing::info!("[CALL_PROVIDER_OPENAI] request.stream = {}, model = {}", request.stream, request.model);
+
+            // 检查是否为流式请求
+            if request.stream {
+                // 流式请求处理
+                tracing::info!("[OPENAI_STREAM] 处理流式请求, model={}", request.model);
+                match kiro.call_api_stream(request).await {
+                    Ok(stream_response) => {
+                        // 记录成功
+                        if let Some(db) = &state.db {
+                            let _ = state.pool_service.mark_healthy(db, &credential.uuid, Some(&request.model));
+                            let _ = state.pool_service.record_usage(db, &credential.uuid);
+                        }
+
+                        tracing::info!("[OPENAI_STREAM] 开始转换流式响应");
+
+                        // 创建 StreamConverter 将 AWS Event Stream 转换为 OpenAI SSE
+                        let converter = std::sync::Arc::new(tokio::sync::Mutex::new(
+                            crate::streaming::converter::StreamConverter::with_model(
+                                crate::streaming::converter::StreamFormat::AwsEventStream,
+                                crate::streaming::converter::StreamFormat::OpenAiSse,
+                                &request.model,
+                            ),
+                        ));
+
+                        // 创建转换流
+                        let converter_for_stream = converter.clone();
+                        let final_stream = async_stream::stream! {
+                            use futures::StreamExt;
+
+                            let mut stream_response = stream_response;
+
+                            while let Some(chunk_result) = stream_response.next().await {
+                                match chunk_result {
+                                    Ok(bytes) => {
+                                        tracing::debug!(
+                                            "[OPENAI_STREAM] 收到 {} 字节数据",
+                                            bytes.len()
+                                        );
+
+                                        // 转换 chunk
+                                        let sse_events = {
+                                            let mut converter_guard = converter_for_stream.lock().await;
+                                            converter_guard.convert(&bytes)
+                                        };
+
+                                        tracing::debug!(
+                                            "[OPENAI_STREAM] 生成 {} 个 SSE 事件",
+                                            sse_events.len()
+                                        );
+
+                                        // yield 每个 SSE 事件
+                                        for sse_str in sse_events {
+                                            yield Ok::<String, crate::streaming::StreamError>(sse_str);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("[OPENAI_STREAM] 流式传输错误: {}", e);
+                                        yield Err(e);
+                                        return;
+                                    }
+                                }
+                            }
+
+                            tracing::info!("[OPENAI_STREAM] 流结束，生成 finalize 事件");
+
+                            // 流结束，生成结束事件
+                            let final_events = {
+                                let mut converter_guard = converter_for_stream.lock().await;
+                                converter_guard.finish()
+                            };
+
+                            tracing::info!("[OPENAI_STREAM] finalize 生成 {} 个事件", final_events.len());
+
+                            for sse_str in final_events {
+                                yield Ok::<String, crate::streaming::StreamError>(sse_str);
+                            }
+                        };
+
+                        tracing::info!("[OPENAI_STREAM] 构建 SSE 响应");
+
+                        // 转换为 Body 流
+                        let body_stream = final_stream.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+                            match result {
+                                Ok(event) => Ok(axum::body::Bytes::from(event)),
+                                Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+                            }
+                        });
+
+                        // 构建 SSE 响应
+                        return Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .header(header::CACHE_CONTROL, "no-cache")
+                            .header(header::CONNECTION, "keep-alive")
+                            .header(header::TRANSFER_ENCODING, "chunked")
+                            .header("X-Accel-Buffering", "no")
+                            .body(Body::from_stream(body_stream))
+                            .unwrap_or_else(|_| {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(
+                                        serde_json::json!({"error": {"message": "Failed to build streaming response"}}),
+                                    ),
+                                )
+                                    .into_response()
+                            });
+                    }
+                    Err(e) => {
+                        // 记录请求错误
+                        if let Some(db) = &state.db {
+                            let _ = state.pool_service.mark_unhealthy(db, &credential.uuid, Some(&e.to_string()));
+                        }
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": {"message": e.to_string()}})),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            // 非流式请求处理
             match kiro.call_api(request).await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -967,6 +1093,53 @@ pub async fn call_provider_openai(
         }
         CredentialData::OpenAIKey { api_key, base_url } => {
             let openai = OpenAICustomProvider::with_config(api_key.clone(), base_url.clone());
+
+            tracing::info!("[OPENAI_KEY] request.stream = {}, model = {}", request.stream, request.model);
+
+            // 检查是否为流式请求
+            if request.stream {
+                tracing::info!("[OPENAI_KEY_STREAM] 处理流式请求, model={}", request.model);
+                match openai.call_api_stream(request).await {
+                    Ok(stream_response) => {
+                        tracing::info!("[OPENAI_KEY_STREAM] 开始直接转发 OpenAI SSE 流");
+
+                        // OpenAI 提供商已经返回 OpenAI SSE 格式，直接转发
+                        let body_stream = stream_response.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+                            match result {
+                                Ok(bytes) => Ok(bytes),
+                                Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+                            }
+                        });
+
+                        return Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .header(header::CACHE_CONTROL, "no-cache")
+                            .header(header::CONNECTION, "keep-alive")
+                            .header(header::TRANSFER_ENCODING, "chunked")
+                            .header("X-Accel-Buffering", "no")
+                            .body(Body::from_stream(body_stream))
+                            .unwrap_or_else(|_| {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(
+                                        serde_json::json!({"error": {"message": "Failed to build streaming response"}}),
+                                    ),
+                                )
+                                    .into_response()
+                            });
+                    }
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": {"message": e.to_string()}})),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            // 非流式请求处理
             match openai.call_api(request).await {
                 Ok(resp) => {
                     if resp.status().is_success() {
@@ -1008,11 +1181,104 @@ pub async fn call_provider_openai(
             // 打印 Claude 代理 URL 用于调试
             let actual_base_url = base_url.as_deref().unwrap_or("https://api.anthropic.com");
             tracing::info!(
-                "[CLAUDE] 使用 Claude API 代理: base_url={} credential_uuid={}",
+                "[CLAUDE] 使用 Claude API 代理: base_url={} credential_uuid={} stream={}",
                 actual_base_url,
-                &credential.uuid[..8]
+                &credential.uuid[..8],
+                request.stream
             );
             let claude = ClaudeCustomProvider::with_config(api_key.clone(), base_url.clone());
+
+            // 检查是否为流式请求
+            if request.stream {
+                tracing::info!("[CLAUDE_KEY_STREAM] 处理流式请求, model={}", request.model);
+
+                match claude.call_api_stream(request).await {
+                    Ok(stream_response) => {
+                        tracing::info!("[CLAUDE_KEY_STREAM] 开始转换 Anthropic SSE 到 OpenAI SSE");
+
+                        // 创建 StreamConverter 将 Anthropic SSE 转换为 OpenAI SSE
+                        let converter = std::sync::Arc::new(tokio::sync::Mutex::new(
+                            crate::streaming::converter::StreamConverter::with_model(
+                                crate::streaming::converter::StreamFormat::AnthropicSse,
+                                crate::streaming::converter::StreamFormat::OpenAiSse,
+                                &request.model,
+                            ),
+                        ));
+
+                        let converter_for_stream = converter.clone();
+                        let final_stream = async_stream::stream! {
+                            use futures::StreamExt;
+
+                            let mut stream_response = stream_response;
+
+                            while let Some(chunk_result) = stream_response.next().await {
+                                match chunk_result {
+                                    Ok(bytes) => {
+                                        // 转换 Anthropic SSE 到 OpenAI SSE
+                                        let sse_events = {
+                                            let mut converter_guard = converter_for_stream.lock().await;
+                                            converter_guard.convert(&bytes)
+                                        };
+
+                                        for sse_str in sse_events {
+                                            yield Ok::<String, crate::streaming::StreamError>(sse_str);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("[CLAUDE_KEY_STREAM] 流式传输错误: {}", e);
+                                        yield Err(e);
+                                        return;
+                                    }
+                                }
+                            }
+
+                            // 流结束，生成结束事件
+                            let final_events = {
+                                let mut converter_guard = converter_for_stream.lock().await;
+                                converter_guard.finish()
+                            };
+
+                            for sse_str in final_events {
+                                yield Ok::<String, crate::streaming::StreamError>(sse_str);
+                            }
+                        };
+
+                        let body_stream = final_stream.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+                            match result {
+                                Ok(event) => Ok(axum::body::Bytes::from(event)),
+                                Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+                            }
+                        });
+
+                        return Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .header(header::CACHE_CONTROL, "no-cache")
+                            .header(header::CONNECTION, "keep-alive")
+                            .header(header::TRANSFER_ENCODING, "chunked")
+                            .header("X-Accel-Buffering", "no")
+                            .body(Body::from_stream(body_stream))
+                            .unwrap_or_else(|_| {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(
+                                        serde_json::json!({"error": {"message": "Failed to build streaming response"}}),
+                                    ),
+                                )
+                                    .into_response()
+                            });
+                    }
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": {"message": e.to_string()}})),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            // 非流式请求处理
             match claude.call_openai_api(request).await {
                 Ok(resp) => Json(resp).into_response(),
                 Err(e) => (

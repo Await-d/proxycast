@@ -1,4 +1,4 @@
-use crate::browser_interceptor::{BrowserInterceptorError, InterceptedUrl, Result};
+use crate::browser_interceptor::{InterceptedUrl, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 

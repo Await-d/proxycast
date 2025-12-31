@@ -2,6 +2,8 @@
 //!
 //! 统一的 Provider 接口，用于凭证管理和 Token 生命周期管理。
 
+#![allow(dead_code)]
+
 use async_trait::async_trait;
 use std::error::Error;
 

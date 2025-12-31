@@ -9,6 +9,8 @@
 //!
 //! _需求: 3.1, 3.2, 3.3_
 
+#![allow(dead_code)]
+
 use crate::plugin::{PluginConfig, PluginInfo, PluginManager, PluginManifest};
 use serde::{Deserialize, Serialize};
 use std::path::Path;

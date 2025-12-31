@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, oneshot, RwLock};
 use tokio::time::{timeout, Duration};
 
-use super::filter_parser::{FilterExpr, FilterParser};
+use super::filter_parser::FilterParser;
 use super::models::{LLMFlow, LLMRequest, LLMResponse};
 
 // ============================================================================

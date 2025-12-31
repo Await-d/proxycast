@@ -1,15 +1,18 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   startAgentProcess,
   stopAgentProcess,
   getAgentProcessStatus,
   createAgentSession,
-  sendAgentMessage,
+  sendAgentMessageStream,
   listAgentSessions,
   deleteAgentSession,
+  parseStreamEvent,
   type AgentProcessStatus,
   type SessionInfo,
+  type StreamEvent,
 } from "@/lib/api/agent";
 import { Message, MessageImage, PROVIDER_CONFIG } from "../types";
 
@@ -156,7 +159,7 @@ export function useAgentChat() {
   }, [sessionId]);
 
   // Ensure an active session exists (internal helper)
-  const ensureSession = async (): Promise<string | null> => {
+  const _ensureSession = async (): Promise<string | null> => {
     // If we already have a session, we might want to continue using it.
     // However, check if we need to "re-initialize" if critical params changed?
     // User said: "选择模型后，不用和会话绑定". So we keep the session ID if it exists.
@@ -236,45 +239,154 @@ export function useAgentChat() {
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setIsSending(true);
 
-    try {
-      // 2. Ensure Session Exists (Seamless)
-      const activeSessionId = await ensureSession();
-      if (!activeSessionId) throw new Error("Could not establish session");
+    // 用于累积流式内容
+    let accumulatedContent = "";
+    let unlisten: UnlistenFn | null = null;
 
-      // 3. Send Message
+    try {
+      // 2. 创建唯一事件名称（流式 API 不需要 session）
+      const eventName = `agent_stream_${assistantMsgId}`;
+
+      // 4. 设置事件监听器（流式接收）
+      console.log(`[AgentChat] 设置事件监听器: ${eventName}`);
+      unlisten = await listen<StreamEvent>(eventName, (event) => {
+        console.log("[AgentChat] 收到事件:", eventName, event.payload);
+        const data = parseStreamEvent(event.payload);
+        if (!data) {
+          console.warn("[AgentChat] 解析事件失败:", event.payload);
+          return;
+        }
+        console.log("[AgentChat] 解析后数据:", data);
+
+        switch (data.type) {
+          case "text_delta":
+            // 累积文本并实时更新 UI
+            accumulatedContent += data.text;
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      content: accumulatedContent,
+                      thinkingContent: undefined,
+                    }
+                  : msg,
+              ),
+            );
+            break;
+
+          case "done":
+            // 完成，标记 isThinking 为 false
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      isThinking: false,
+                      content: accumulatedContent || "(No response)",
+                    }
+                  : msg,
+              ),
+            );
+            setIsSending(false);
+            if (unlisten) {
+              unlisten();
+              unlisten = null;
+            }
+            break;
+
+          case "error":
+            // 错误处理
+            toast.error(`响应错误: ${data.message}`);
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      isThinking: false,
+                      content: accumulatedContent || `错误: ${data.message}`,
+                    }
+                  : msg,
+              ),
+            );
+            setIsSending(false);
+            if (unlisten) {
+              unlisten();
+              unlisten = null;
+            }
+            break;
+
+          case "tool_start":
+            // 工具开始执行 - 添加到工具调用列表
+            console.log(`[Tool Start] ${data.tool_name} (${data.tool_id})`);
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      toolCalls: [
+                        ...(msg.toolCalls || []),
+                        {
+                          id: data.tool_id,
+                          name: data.tool_name,
+                          status: "running" as const,
+                          startTime: new Date(),
+                        },
+                      ],
+                    }
+                  : msg,
+              ),
+            );
+            break;
+
+          case "tool_end":
+            // 工具执行完成 - 更新工具调用状态
+            console.log(`[Tool End] ${data.tool_id}`);
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      toolCalls: (msg.toolCalls || []).map((tc) =>
+                        tc.id === data.tool_id
+                          ? {
+                              ...tc,
+                              status: data.result.success
+                                ? ("completed" as const)
+                                : ("failed" as const),
+                              result: data.result,
+                              endTime: new Date(),
+                            }
+                          : tc,
+                      ),
+                    }
+                  : msg,
+              ),
+            );
+            break;
+        }
+      });
+
+      // 5. 发送流式请求
       const imagesToSend =
         images.length > 0
           ? images.map((img) => ({ data: img.data, media_type: img.mediaType }))
           : undefined;
 
-      // Pass current model preference to override session default if supported
-      const response = await sendAgentMessage(
+      await sendAgentMessageStream(
         content,
-        activeSessionId,
+        eventName,
         model || undefined,
         imagesToSend,
-        webSearch,
-        thinking,
-      );
-
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === assistantMsgId
-            ? {
-                ...msg,
-                content: response || "(No response)",
-                isThinking: false,
-                thinkingContent: undefined,
-              }
-            : msg,
-        ),
       );
     } catch (error) {
       toast.error(`发送失败: ${error}`);
       // Remove the optimistic assistant message on failure
       setMessages((prev) => prev.filter((msg) => msg.id !== assistantMsgId));
-    } finally {
       setIsSending(false);
+      if (unlisten) {
+        unlisten();
+      }
     }
   };
 

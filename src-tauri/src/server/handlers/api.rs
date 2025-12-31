@@ -3,6 +3,8 @@
 //! 处理 OpenAI 和 Anthropic 格式的 API 请求
 //!
 //! # 流式传输支持
+
+#![allow(dead_code)]
 //!
 //! 本模块支持真正的端到端流式传输：
 //! - 对于流式请求，使用 StreamManager 处理响应

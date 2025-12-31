@@ -3,6 +3,8 @@
 //! Provides API key authentication for Google Vertex AI models.
 //! Supports model alias mappings and load balancing across multiple credentials.
 
+#![allow(dead_code)]
+
 use crate::config::VertexApiKeyEntry;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

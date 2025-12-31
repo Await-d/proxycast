@@ -8,6 +8,8 @@
 //! - `~p <provider>`: 提供商匹配
 //! - `~s <state>`: 状态匹配 (pending/streaming/completed/failed)
 //! - `~e`: 有错误
+
+#![allow(dead_code)]
 //! - `~t`: 有工具调用
 //! - `~k`: 有思维链
 //! - `~starred`: 已收藏
@@ -382,7 +384,7 @@ impl<'a> Lexer<'a> {
                 self.chars.next();
                 ComparisonOp::Eq
             }
-            Some(&(pos, c)) => {
+            Some(&(_pos, c)) => {
                 return Err(FilterParseError::InvalidComparisonOp(c.to_string()));
             }
             None => {

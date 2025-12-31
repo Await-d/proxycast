@@ -9,6 +9,8 @@
 //! - 超时控制
 //! - 防止交互的环境变量设置
 
+#![allow(dead_code)]
+
 use super::registry::Tool;
 use super::security::SecurityManager;
 use super::types::{JsonSchema, PropertySchema, ToolDefinition, ToolError, ToolResult};
@@ -460,7 +462,7 @@ impl Tool for BashTool {
         // Requirements: 3.2 - THE Bash_Executor SHALL capture both stdout and stderr
         // Requirements: 3.5 - IF a command fails, THEN THE Bash_Executor SHALL return the exit code and error output
         if result.timed_out {
-            let output = format!(
+            let _output = format!(
                 "命令执行超时（{}秒）\n\n已捕获的输出:\n{}",
                 timeout_secs,
                 result.combined_output()

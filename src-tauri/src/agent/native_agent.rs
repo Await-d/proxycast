@@ -11,8 +11,9 @@
 //! - 实现工具调用检测、执行和结果收集
 //! - Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6
 
-use crate::agent::tool_loop::{ToolCallResult, ToolLoopConfig, ToolLoopEngine, ToolLoopState};
-use crate::agent::tools::ToolRegistry;
+#![allow(dead_code)]
+
+use crate::agent::tool_loop::{ToolCallResult, ToolLoopEngine, ToolLoopState};
 use crate::agent::types::*;
 use crate::models::openai::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ContentPart as OpenAIContentPart,
@@ -580,7 +581,7 @@ impl NativeAgent {
         let model = request.model.unwrap_or_else(|| self.config.model.clone());
         let session_id = request.session_id.clone();
 
-        debug!(
+        info!(
             "[NativeAgent] 发送流式聊天请求: model={}, session={:?}",
             model, session_id
         );
@@ -652,7 +653,10 @@ impl NativeAgent {
 
                         for line in event.lines() {
                             if let Some(data) = line.strip_prefix("data: ") {
+                                debug!("[NativeAgent] SSE data: {}", data);
                                 let (text_delta, is_done, usage) = parser.parse_data(data);
+                                debug!("[NativeAgent] 解析结果: text_delta={:?}, is_done={}, usage={:?}",
+                                    text_delta, is_done, usage);
 
                                 // 更新 usage
                                 if usage.is_some() {
@@ -661,6 +665,7 @@ impl NativeAgent {
 
                                 // 发送文本增量
                                 if let Some(text) = text_delta {
+                                    debug!("[NativeAgent] 发送 TextDelta: {}", text);
                                     let _ = tx.send(StreamEvent::TextDelta { text }).await;
                                 }
 

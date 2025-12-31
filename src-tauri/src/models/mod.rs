@@ -24,5 +24,3 @@ pub use provider_model::Provider;
 #[allow(unused_imports)]
 pub use provider_pool_model::*;
 pub use skill_model::{Skill, SkillMetadata, SkillRepo, SkillState, SkillStates};
-
-pub use kiro_fingerprint::{KiroFingerprintBinding, KiroFingerprintStore, SwitchToLocalResult};

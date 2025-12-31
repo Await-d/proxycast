@@ -2,6 +2,8 @@
 //!
 //! 根据源协议、目标 Provider 和请求特征，选择最优的协议转换路径。
 
+#![allow(dead_code)]
+
 use crate::models::provider_pool_model::PoolProviderType;
 
 /// 协议类型

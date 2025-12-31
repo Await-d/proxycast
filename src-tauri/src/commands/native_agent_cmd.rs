@@ -211,12 +211,19 @@ pub async fn native_agent_chat_stream(
         let stream_task = tokio::spawn(async move { agent.chat_stream(request, tx).await });
 
         while let Some(event) = rx.recv().await {
+            tracing::debug!(
+                "[NativeAgent] 收到流式事件: {:?}, 发送到: {}",
+                event,
+                event_name_clone
+            );
             if let Err(e) = app_handle.emit(&event_name_clone, &event) {
                 tracing::error!("[NativeAgent] 发送事件失败: {}", e);
                 break;
             }
+            tracing::debug!("[NativeAgent] 事件发送成功");
 
             if matches!(event, StreamEvent::Done { .. } | StreamEvent::Error { .. }) {
+                tracing::info!("[NativeAgent] 流式响应完成");
                 break;
             }
         }

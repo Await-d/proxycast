@@ -3,6 +3,8 @@
 //! 提供配置文件监控和热重载功能
 //! - 使用 `notify` crate 监控配置文件变化
 //! - 支持原子性配置更新
+
+#![allow(dead_code)]
 //! - 失败时自动回滚到之前的配置
 
 use super::types::{is_default_api_key, Config};

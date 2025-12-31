@@ -3,6 +3,8 @@
 //! 在不同流式格式之间转换，支持 AWS Event Stream、Anthropic SSE 和 OpenAI SSE。
 //!
 //! # 需求覆盖
+
+#![allow(dead_code)]
 //!
 //! - 需求 3.1: AWS Event Stream 到 Anthropic SSE 转换
 //! - 需求 3.2: AWS Event Stream 到 OpenAI SSE 转换

@@ -24,7 +24,7 @@ pub struct KiroEventService {
 
 /// 缓存的凭证状态
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct CachedCredentialState {
+pub struct CachedCredentialState {
     uuid: String,
     is_healthy: bool,
     is_disabled: bool,

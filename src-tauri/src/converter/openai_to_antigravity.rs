@@ -8,6 +8,8 @@
 //! - 工具定义转换（parameters → parametersJsonSchema）
 //! - 安全设置自动附加
 //! - 思维链配置（reasoning_effort）
+
+#![allow(dead_code)]
 //!
 //! ## 更新日志
 //! - 2025-12-28: 修复请求格式，对齐 CLIProxyAPI 实现

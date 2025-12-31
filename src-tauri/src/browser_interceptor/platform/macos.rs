@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::browser_interceptor::{BrowserInterceptorError, InterceptedUrl, Result};
 use once_cell::sync::Lazy;
 use std::process::Command;

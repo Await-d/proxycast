@@ -1,4 +1,7 @@
 //! Kiro/CodeWhisperer Provider
+
+#![allow(dead_code)]
+
 use crate::converter::openai_to_cw::convert_openai_to_codewhisperer;
 use crate::models::openai::*;
 use crate::providers::traits::{CredentialProvider, ProviderResult};

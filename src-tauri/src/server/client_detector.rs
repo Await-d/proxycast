@@ -2,6 +2,8 @@
 //!
 //! 通过解析 HTTP 请求的 User-Agent 头来识别客户端类型。
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 /// 客户端类型枚举
@@ -130,7 +132,7 @@ impl std::fmt::Display for ClientType {
 /// # 返回
 /// 选择的 Provider 名称
 pub fn select_provider(
-    client_type: ClientType,
+    _client_type: ClientType,
     endpoint_provider: Option<&String>,
     default_provider: &str,
 ) -> String {

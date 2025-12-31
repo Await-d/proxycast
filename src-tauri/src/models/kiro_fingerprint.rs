@@ -2,6 +2,8 @@
 //!
 //! 为每个 Kiro 凭证存储独立的 Machine ID，实现多账号指纹隔离。
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -1,5 +1,7 @@
 //! Provider Pool Tauri 命令
 
+#![allow(dead_code)]
+
 use crate::credential::CredentialSyncService;
 use crate::database::dao::provider_pool::ProviderPoolDao;
 use crate::database::DbConnection;

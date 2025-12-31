@@ -3,6 +3,8 @@
 //! 实现 iFlow OAuth 和 Cookie 认证流程，与 CLIProxyAPI 对齐。
 //! 支持双重认证模式：OAuth Token 和导入的 Cookie。
 
+#![allow(dead_code)]
+
 use super::error::{
     create_auth_error, create_config_error, create_token_refresh_error, ProviderError,
 };

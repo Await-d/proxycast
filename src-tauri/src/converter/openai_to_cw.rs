@@ -5,6 +5,9 @@
 //! # 更新日志
 //!
 //! - 2025-12-27: 添加 web_search 工具支持，修复 Issue #49
+
+#![allow(dead_code)]
+
 use crate::models::codewhisperer::*;
 use crate::models::openai::*;
 use std::collections::HashMap;

@@ -2,6 +2,8 @@
 //!
 //! 支持 Gemini 3 Pro 等高级模型，通过 Google 内部 API 访问。
 
+#![allow(dead_code)]
+
 use super::traits::{CredentialProvider, ProviderResult};
 use async_trait::async_trait;
 use reqwest::Client;

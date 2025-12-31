@@ -582,7 +582,7 @@ impl FlowReplayer {
         credential_id: &Option<String>,
     ) -> Result<Option<String>, ReplayerError> {
         // 如果没有指定凭证，尝试从凭证池选择
-        let cred_id = if let Some(id) = credential_id {
+        let _cred_id = if let Some(id) = credential_id {
             id.clone()
         } else {
             // 尝试从凭证池选择

@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// 拦截器状态
 #[derive(Debug, Clone, Serialize, Deserialize)]

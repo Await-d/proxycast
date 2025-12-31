@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 use crate::models::machine_id::*;
 use dirs;
 use serde_json;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use tracing;
 use uuid::Uuid;

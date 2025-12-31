@@ -2,6 +2,8 @@
 //!
 //! 提供服务器状态查询、凭证管理、配置管理等功能
 
+#![allow(dead_code)]
+
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 

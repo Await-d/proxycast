@@ -2,6 +2,8 @@
 //!
 //! 提供数据库与配置备份的基础能力
 
+#![allow(dead_code)]
+
 use crate::database::{get_db_path, DbConnection};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::DatabaseName;

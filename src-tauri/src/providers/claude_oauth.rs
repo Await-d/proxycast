@@ -8,6 +8,8 @@
 //! 2. **Cookie 自动授权** - 使用 sessionKey 自动完成整个 OAuth 流程
 //! 3. **Setup Token** - 只需推理权限，无 refresh_token
 //!
+
+#![allow(dead_code)]
 //! ## 主要功能
 //!
 //! - Token 刷新和重试机制

@@ -2,6 +2,8 @@
 //!
 //! 定义安装相关的错误类型、进度类型和数据结构
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

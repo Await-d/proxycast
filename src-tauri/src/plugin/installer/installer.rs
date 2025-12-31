@@ -19,7 +19,6 @@ use super::types::{
     InstallError, InstallProgress, InstallSource, InstalledPlugin, PackageFormat, ProgressCallback,
 };
 use super::validator::PackageValidator;
-use crate::plugin::PluginManifest;
 
 /// 插件安装器
 ///

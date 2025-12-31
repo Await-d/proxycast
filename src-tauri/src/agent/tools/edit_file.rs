@@ -8,6 +8,8 @@
 //! - 多次出现检测（返回错误要求更多上下文）
 //! - 不存在检测（返回错误和指导）
 //! - Unified diff 支持
+
+#![allow(dead_code)]
 //! - 历史栈和撤销功能
 //! - 返回变更上下文片段
 
@@ -20,7 +22,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// 上下文行数（显示变更前后的行数）
 const CONTEXT_LINES: usize = 3;
@@ -339,7 +341,7 @@ fn find_occurrence_positions(content: &str, pattern: &str) -> Vec<usize> {
 }
 
 /// 获取指定位置的上下文片段
-fn get_context_snippet(content: &str, position: usize, match_len: usize) -> String {
+fn get_context_snippet(content: &str, position: usize, _match_len: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
 
     // 找到位置所在的行

@@ -1,7 +1,7 @@
 use crate::models::{AppType, Provider};
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
 
 /// ProxyCast 管理的环境变量块标记

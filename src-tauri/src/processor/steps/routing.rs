@@ -2,6 +2,8 @@
 //!
 //! 解析模型别名并选择 Provider
 
+#![allow(dead_code)]
+
 use super::traits::{PipelineStep, StepError};
 use crate::processor::RequestContext;
 use crate::router::{ModelMapper, Router};

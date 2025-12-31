@@ -121,7 +121,7 @@ pub async fn get_available_credentials(
         status_code: 503,
     })?;
 
-    let pool_service = &state.pool_service;
+    let _pool_service = &state.pool_service;
     let token_cache = &state.token_cache;
 
     // 获取所有kiro凭证

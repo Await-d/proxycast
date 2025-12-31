@@ -8,6 +8,8 @@
 //! - 阈值检测（延迟、Token 使用量）
 //! - 请求速率计算
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};

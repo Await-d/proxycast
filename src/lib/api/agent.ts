@@ -248,7 +248,7 @@ export async function createAgentSession(
 }
 
 /**
- * 发送消息到 Agent（支持连续对话）
+ * 发送消息到 Agent（支持连续对话）- 非流式版本
  */
 export async function sendAgentMessage(
   message: string,
@@ -265,6 +265,35 @@ export async function sendAgentMessage(
     model,
     webSearch,
     thinking,
+  });
+}
+
+/**
+ * 发送消息到 Agent（流式版本）
+ *
+ * 通过 Tauri 事件接收响应流，需要配合 listen() 使用：
+ * @example
+ * ```typescript
+ * const unlisten = await listen<StreamEvent>(eventName, (event) => {
+ *   const data = event.payload;
+ *   if (data.type === "text_delta") {
+ *     // 处理文本增量
+ *   }
+ * });
+ * await sendAgentMessageStream(message, eventName);
+ * ```
+ */
+export async function sendAgentMessageStream(
+  message: string,
+  eventName: string,
+  model?: string,
+  images?: ImageInput[],
+): Promise<void> {
+  return await invoke("native_agent_chat_stream", {
+    message,
+    eventName,
+    model,
+    images,
   });
 }
 

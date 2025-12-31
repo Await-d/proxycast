@@ -3,6 +3,8 @@
 //! 提供 YAML 配置的加载、保存和管理功能
 //! 支持保留注释的配置保存
 
+#![allow(dead_code)]
+
 use super::types::Config;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

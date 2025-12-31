@@ -292,7 +292,7 @@ impl StateManager {
 
     /// 备份注册表项（Windows 特定）
     async fn backup_registry_keys(&self) -> Result<std::collections::HashMap<String, String>> {
-        let mut backup = std::collections::HashMap::new();
+        let backup = std::collections::HashMap::new();
 
         #[cfg(target_os = "windows")]
         {
@@ -411,11 +411,11 @@ impl StateManager {
     /// 恢复注册表项
     async fn restore_registry_keys(
         &self,
-        backup: &std::collections::HashMap<String, String>,
+        _backup: &std::collections::HashMap<String, String>,
     ) -> Result<()> {
         #[cfg(target_os = "windows")]
         {
-            for (key_path, value) in backup {
+            for (key_path, value) in _backup {
                 if let Err(e) = self.write_registry_value(key_path, "ProgId", value).await {
                     tracing::error!("恢复注册表项失败 {}: {}", key_path, e);
                 }

@@ -3,6 +3,8 @@
 //! 提供已安装插件的 CRUD 操作。
 //! _需求: 1.2, 4.2_
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;

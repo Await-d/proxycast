@@ -2,6 +2,8 @@
 //!
 //! 提供 Token 计数记录、估算和统计功能
 
+#![allow(dead_code)]
+
 use crate::ProviderType;
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
