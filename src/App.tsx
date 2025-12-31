@@ -3,12 +3,15 @@
  *
  * 管理页面路由和全局状态
  * 支持静态页面和动态插件页面路由
+ * 包含启动画面和全局图标侧边栏
  *
  * _需求: 2.2, 3.2_
  */
 
-import { useState, useEffect } from "react";
-import { Sidebar } from "./components/Sidebar";
+import { useState, useEffect, useCallback } from "react";
+import styled from "styled-components";
+import { SplashScreen } from "./components/SplashScreen";
+import { AppSidebar } from "./components/AppSidebar";
 import { SettingsPage } from "./components/settings";
 import { ApiServerPage } from "./components/api-server/ApiServerPage";
 import { ProviderPoolPage } from "./components/provider-pool";
@@ -43,13 +46,34 @@ type Page =
   | "settings"
   | `plugin:${string}`;
 
+const AppContainer = styled.div`
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: hsl(var(--background));
+  overflow: hidden;
+`;
+
+const MainContent = styled.main`
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+`;
+
+const PageWrapper = styled.div`
+  flex: 1;
+  padding: 24px;
+  overflow: auto;
+`;
+
 function App() {
-  const [currentPage, setCurrentPage] = useState<Page>("api-server");
+  const [showSplash, setShowSplash] = useState(true);
+  const [currentPage, setCurrentPage] = useState<Page>("agent");
 
   // 在应用启动时初始化 Flow 事件订阅
   useEffect(() => {
     flowEventManager.subscribe();
-    // 应用卸载时不取消订阅，因为这是全局订阅
   }, []);
 
   // 页面切换时重置滚动位置
@@ -59,6 +83,10 @@ function App() {
       mainElement.scrollTop = 0;
     }
   }, [currentPage]);
+
+  const handleSplashComplete = useCallback(() => {
+    setShowSplash(false);
+  }, []);
 
   /**
    * 渲染当前页面
@@ -74,41 +102,87 @@ function App() {
     if (currentPage.startsWith("plugin:")) {
       const pluginId = currentPage.slice(7); // 移除 "plugin:" 前缀
       return (
-        <PluginUIRenderer pluginId={pluginId} onNavigate={setCurrentPage} />
+        <PageWrapper>
+          <PluginUIRenderer pluginId={pluginId} onNavigate={setCurrentPage} />
+        </PageWrapper>
       );
     }
 
     // 静态页面路由
     switch (currentPage) {
       case "provider-pool":
-        return <ProviderPoolPage />;
+        return (
+          <PageWrapper>
+            <ProviderPoolPage />
+          </PageWrapper>
+        );
       case "config-management":
-        return <ConfigManagementPage />;
+        return (
+          <PageWrapper>
+            <ConfigManagementPage />
+          </PageWrapper>
+        );
       case "api-server":
-        return <ApiServerPage />;
+        return (
+          <PageWrapper>
+            <ApiServerPage />
+          </PageWrapper>
+        );
       case "flow-monitor":
-        return <FlowMonitorPage />;
+        return (
+          <PageWrapper>
+            <FlowMonitorPage />
+          </PageWrapper>
+        );
       case "agent":
-        return <AgentChatPage />;
+        // Agent 页面有自己的布局，不需要 PageWrapper
+        return (
+          <AgentChatPage onNavigate={(page) => setCurrentPage(page as Page)} />
+        );
       case "tools":
-        return <ToolsPage onNavigate={setCurrentPage} />;
+        return (
+          <PageWrapper>
+            <ToolsPage onNavigate={setCurrentPage} />
+          </PageWrapper>
+        );
       case "plugins":
-        return <PluginsPage />;
+        return (
+          <PageWrapper>
+            <PluginsPage />
+          </PageWrapper>
+        );
       case "browser-interceptor":
-        return <BrowserInterceptorTool onNavigate={setCurrentPage} />;
+        return (
+          <PageWrapper>
+            <BrowserInterceptorTool onNavigate={setCurrentPage} />
+          </PageWrapper>
+        );
       case "settings":
-        return <SettingsPage />;
+        return (
+          <PageWrapper>
+            <SettingsPage />
+          </PageWrapper>
+        );
       default:
-        return <ApiServerPage />;
+        return (
+          <PageWrapper>
+            <ApiServerPage />
+          </PageWrapper>
+        );
     }
   };
 
+  // 显示启动画面
+  if (showSplash) {
+    return <SplashScreen onComplete={handleSplashComplete} />;
+  }
+
   return (
-    <div className="flex h-screen bg-background">
-      <Sidebar currentPage={currentPage} onNavigate={setCurrentPage} />
-      <main className="flex-1 overflow-auto p-6">{renderPage()}</main>
+    <AppContainer>
+      <AppSidebar currentPage={currentPage} onNavigate={setCurrentPage} />
+      <MainContent>{renderPage()}</MainContent>
       <Toaster />
-    </div>
+    </AppContainer>
   );
 }
 

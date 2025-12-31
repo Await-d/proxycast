@@ -69,6 +69,49 @@ impl ClaudeCustomProvider {
         }
     }
 
+    /// 将 OpenAI 图片 URL 格式转换为 Claude 图片格式
+    ///
+    /// 支持两种格式：
+    /// 1. data URL: `data:image/jpeg;base64,xxxxx` -> Claude base64 格式
+    /// 2. HTTP URL: `https://...` -> 作为文本提示（Claude 不直接支持 URL）
+    fn convert_image_url_to_claude(url: &str) -> Option<serde_json::Value> {
+        if url.starts_with("data:") {
+            // 解析 data URL: data:image/jpeg;base64,xxxxx
+            let parts: Vec<&str> = url.splitn(2, ',').collect();
+            if parts.len() == 2 {
+                let header = parts[0]; // data:image/jpeg;base64
+                let data = parts[1]; // base64 数据
+
+                // 提取 media_type: image/jpeg, image/png, image/gif, image/webp
+                let media_type = header
+                    .strip_prefix("data:")
+                    .and_then(|s| s.split(';').next())
+                    .unwrap_or("image/jpeg");
+
+                tracing::debug!("[CLAUDE_IMAGE] 转换 base64 图片: media_type={}", media_type);
+
+                return Some(serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data
+                    }
+                }));
+            }
+        } else if url.starts_with("http://") || url.starts_with("https://") {
+            // Claude 不直接支持 URL 图片，转为文本提示
+            tracing::warn!("[CLAUDE_IMAGE] Claude 不支持 URL 图片，转为文本: {}", url);
+            return Some(serde_json::json!({
+                "type": "text",
+                "text": format!("[Image: {}]", url)
+            }));
+        }
+
+        tracing::warn!("[CLAUDE_IMAGE] 无法解析图片 URL: {}", url);
+        None
+    }
+
     /// 调用 Anthropic API（原生格式）
     pub async fn call_api(
         &self,
@@ -122,29 +165,45 @@ impl ClaudeCustomProvider {
         for msg in &request.messages {
             let role = &msg.role;
 
-            // 提取消息内容
-            let content = match &msg.content {
-                Some(MessageContent::Text(text)) => text.clone(),
+            // 提取消息内容，转换为 Anthropic 格式的 content 数组
+            let content_blocks: Vec<serde_json::Value> = match &msg.content {
+                Some(MessageContent::Text(text)) => {
+                    if text.is_empty() {
+                        vec![]
+                    } else {
+                        vec![serde_json::json!({"type": "text", "text": text})]
+                    }
+                }
                 Some(MessageContent::Parts(parts)) => {
-                    // 合并所有文本部分
                     parts
                         .iter()
-                        .filter_map(|p| {
-                            if let ContentPart::Text { text } = p {
-                                Some(text.clone())
-                            } else {
-                                None
+                        .filter_map(|p| match p {
+                            ContentPart::Text { text } => {
+                                if text.is_empty() {
+                                    None
+                                } else {
+                                    Some(serde_json::json!({"type": "text", "text": text}))
+                                }
+                            }
+                            ContentPart::ImageUrl { image_url } => {
+                                // 转换 OpenAI 图片格式为 Claude 图片格式
+                                Self::convert_image_url_to_claude(&image_url.url)
                             }
                         })
-                        .collect::<Vec<_>>()
-                        .join("")
+                        .collect()
                 }
-                None => String::new(),
+                None => vec![],
             };
 
             if role == "system" {
-                system_content = Some(content);
-            } else {
+                // system 消息只提取文本
+                let text = content_blocks
+                    .iter()
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("");
+                system_content = Some(text);
+            } else if !content_blocks.is_empty() {
                 let anthropic_role = if role == "assistant" {
                     "assistant"
                 } else {
@@ -152,7 +211,7 @@ impl ClaudeCustomProvider {
                 };
                 anthropic_messages.push(serde_json::json!({
                     "role": anthropic_role,
-                    "content": content
+                    "content": content_blocks
                 }));
             }
         }
@@ -354,26 +413,45 @@ impl StreamingProvider for ClaudeCustomProvider {
         for msg in &request.messages {
             let role = &msg.role;
 
-            // 提取消息内容
-            let content = match &msg.content {
-                Some(MessageContent::Text(text)) => text.clone(),
-                Some(MessageContent::Parts(parts)) => parts
-                    .iter()
-                    .filter_map(|p| {
-                        if let ContentPart::Text { text } = p {
-                            Some(text.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(""),
-                None => String::new(),
+            // 提取消息内容，转换为 Anthropic 格式的 content 数组
+            let content_blocks: Vec<serde_json::Value> = match &msg.content {
+                Some(MessageContent::Text(text)) => {
+                    if text.is_empty() {
+                        vec![]
+                    } else {
+                        vec![serde_json::json!({"type": "text", "text": text})]
+                    }
+                }
+                Some(MessageContent::Parts(parts)) => {
+                    parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            ContentPart::Text { text } => {
+                                if text.is_empty() {
+                                    None
+                                } else {
+                                    Some(serde_json::json!({"type": "text", "text": text}))
+                                }
+                            }
+                            ContentPart::ImageUrl { image_url } => {
+                                // 转换 OpenAI 图片格式为 Claude 图片格式
+                                Self::convert_image_url_to_claude(&image_url.url)
+                            }
+                        })
+                        .collect()
+                }
+                None => vec![],
             };
 
             if role == "system" {
-                system_content = Some(content);
-            } else {
+                // system 消息只提取文本
+                let text = content_blocks
+                    .iter()
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("");
+                system_content = Some(text);
+            } else if !content_blocks.is_empty() {
                 let anthropic_role = if role == "assistant" {
                     "assistant"
                 } else {
@@ -381,7 +459,7 @@ impl StreamingProvider for ClaudeCustomProvider {
                 };
                 anthropic_messages.push(serde_json::json!({
                     "role": anthropic_role,
-                    "content": content
+                    "content": content_blocks
                 }));
             }
         }

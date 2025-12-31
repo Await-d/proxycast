@@ -466,9 +466,21 @@ impl CachedTokenInfo {
 
     /// 检查 token 是否即将过期（5分钟内）
     pub fn is_expiring_soon(&self) -> bool {
+        self.is_expiring_within_minutes(5)
+    }
+
+    /// 检查 token 是否在指定分钟数内过期
+    ///
+    /// # 参数
+    /// - `minutes`: 检查的时间阈值（分钟）
+    ///
+    /// # 返回
+    /// - `true`: Token 将在指定分钟数内过期
+    /// - `false`: Token 不会在指定分钟数内过期，或没有过期时间
+    pub fn is_expiring_within_minutes(&self, minutes: i64) -> bool {
         match &self.expiry_time {
             Some(expiry) => {
-                let threshold = Utc::now() + chrono::Duration::minutes(5);
+                let threshold = Utc::now() + chrono::Duration::minutes(minutes);
                 *expiry <= threshold
             }
             None => false, // 没有过期时间，假设不会过期
@@ -946,5 +958,154 @@ mod tests {
         // All models should be supported since not_supported_models is empty
         assert!(cred.supports_model("claude-sonnet"));
         assert!(cred.supports_model("claude-opus"));
+    }
+
+    // ========================================================================
+    // Property-Based Tests for Token Expiration Check
+    // ========================================================================
+
+    use proptest::prelude::*;
+
+    /// 生成随机的过期时间偏移量（分钟）
+    fn expiry_offset_strategy() -> impl Strategy<Value = i64> {
+        // 生成 -60 到 +120 分钟的偏移量
+        -60i64..=120i64
+    }
+
+    /// 生成随机的检查阈值（分钟）
+    fn threshold_strategy() -> impl Strategy<Value = i64> {
+        // 生成 1 到 30 分钟的阈值
+        1i64..=30i64
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        /// **Feature: kiro-streaming-fix, Property 7: Token 过期检查**
+        ///
+        /// *对于任意* 即将过期的 Token（指定分钟数内），`is_expiring_within_minutes`
+        /// 方法应该正确返回 true；对于不会在指定时间内过期的 Token，应该返回 false。
+        ///
+        /// **Validates: Requirements 4.4**
+        #[test]
+        fn property_token_expiration_check(
+            offset_minutes in expiry_offset_strategy(),
+            threshold_minutes in threshold_strategy()
+        ) {
+            let now = Utc::now();
+            let expiry_time = now + chrono::Duration::minutes(offset_minutes);
+
+            let cache_info = CachedTokenInfo {
+                access_token: Some("test_token".to_string()),
+                refresh_token: None,
+                expiry_time: Some(expiry_time),
+                last_refresh: None,
+                refresh_error_count: 0,
+                last_refresh_error: None,
+            };
+
+            let is_expiring = cache_info.is_expiring_within_minutes(threshold_minutes);
+
+            // Token 应该在 offset_minutes <= threshold_minutes 时被认为即将过期
+            // 注意：由于时间精度问题，我们允许 1 秒的误差
+            if offset_minutes <= threshold_minutes {
+                prop_assert!(
+                    is_expiring,
+                    "Token with {}min until expiry should be considered expiring within {}min",
+                    offset_minutes,
+                    threshold_minutes
+                );
+            } else {
+                prop_assert!(
+                    !is_expiring,
+                    "Token with {}min until expiry should NOT be considered expiring within {}min",
+                    offset_minutes,
+                    threshold_minutes
+                );
+            }
+        }
+
+        /// **Feature: kiro-streaming-fix, Property 7.1: 无过期时间的 Token 不会被认为即将过期**
+        ///
+        /// *对于任意* 没有过期时间的 Token，`is_expiring_within_minutes` 应该返回 false。
+        ///
+        /// **Validates: Requirements 4.4**
+        #[test]
+        fn property_no_expiry_time_not_expiring(threshold_minutes in threshold_strategy()) {
+            let cache_info = CachedTokenInfo {
+                access_token: Some("test_token".to_string()),
+                refresh_token: None,
+                expiry_time: None, // 没有过期时间
+                last_refresh: None,
+                refresh_error_count: 0,
+                last_refresh_error: None,
+            };
+
+            let is_expiring = cache_info.is_expiring_within_minutes(threshold_minutes);
+
+            prop_assert!(
+                !is_expiring,
+                "Token without expiry time should NOT be considered expiring within {}min",
+                threshold_minutes
+            );
+        }
+
+        /// **Feature: kiro-streaming-fix, Property 7.2: is_expiring_soon 等价于 is_expiring_within_minutes(5)**
+        ///
+        /// *对于任意* Token，`is_expiring_soon()` 应该等价于 `is_expiring_within_minutes(5)`。
+        ///
+        /// **Validates: Requirements 4.4**
+        #[test]
+        fn property_expiring_soon_equivalence(offset_minutes in expiry_offset_strategy()) {
+            let now = Utc::now();
+            let expiry_time = now + chrono::Duration::minutes(offset_minutes);
+
+            let cache_info = CachedTokenInfo {
+                access_token: Some("test_token".to_string()),
+                refresh_token: None,
+                expiry_time: Some(expiry_time),
+                last_refresh: None,
+                refresh_error_count: 0,
+                last_refresh_error: None,
+            };
+
+            let is_expiring_soon = cache_info.is_expiring_soon();
+            let is_expiring_within_5 = cache_info.is_expiring_within_minutes(5);
+
+            prop_assert_eq!(
+                is_expiring_soon,
+                is_expiring_within_5,
+                "is_expiring_soon() should be equivalent to is_expiring_within_minutes(5)"
+            );
+        }
+
+        /// **Feature: kiro-streaming-fix, Property 7.3: 10分钟阈值检查**
+        ///
+        /// *对于任意* 在 10 分钟内过期的 Token，`is_expiring_within_minutes(10)` 应该返回 true。
+        /// 这是流式请求前的预检查阈值。
+        ///
+        /// **Validates: Requirements 4.4**
+        #[test]
+        fn property_streaming_threshold_check(offset_minutes in 0i64..=10i64) {
+            let now = Utc::now();
+            let expiry_time = now + chrono::Duration::minutes(offset_minutes);
+
+            let cache_info = CachedTokenInfo {
+                access_token: Some("test_token".to_string()),
+                refresh_token: None,
+                expiry_time: Some(expiry_time),
+                last_refresh: None,
+                refresh_error_count: 0,
+                last_refresh_error: None,
+            };
+
+            let is_expiring = cache_info.is_expiring_within_minutes(10);
+
+            prop_assert!(
+                is_expiring,
+                "Token expiring in {}min should be considered expiring within 10min (streaming threshold)",
+                offset_minutes
+            );
+        }
     }
 }

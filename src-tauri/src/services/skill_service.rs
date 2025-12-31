@@ -188,7 +188,10 @@ impl SkillService {
 
                 let key = format!("{}{}", repo_key_prefix, directory);
                 let app_key = format!("{}:{}", app_type.to_string().to_lowercase(), directory);
-                let installed = installed_states.contains_key(&app_key);
+                let installed = installed_states
+                    .get(&app_key)
+                    .map(|state| state.installed)
+                    .unwrap_or(false);
 
                 let readme_url = Some(format!(
                     "https://github.com/{}/{}/blob/{}/{}/SKILL.md",

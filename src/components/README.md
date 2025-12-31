@@ -9,13 +9,13 @@ React 组件层，包含 UI 组件和业务组件。
 
 ## 文件索引
 
+- `agent/` - AI Agent 聊天页面组件
 - `api-server/` - API 服务器配置组件
 - `clients/` - 客户端管理组件
 - `config/` - 配置管理组件
 - `extensions/` - 扩展功能组件
 - `flow-monitor/` - LLM 流量监控组件
 - `mcp/` - MCP 服务器管理组件
-- `monitoring/` - 监控面板组件
 - `plugins/` - 插件管理组件
 - `prompts/` - Prompt 管理组件
 - `provider-pool/` - Provider 凭证池管理组件
@@ -24,13 +24,16 @@ React 组件层，包含 UI 组件和业务组件。
 - `settings/` - 设置页面组件
 - `skills/` - 技能管理组件
 - `switch/` - 开关控制组件
+- `tools/` - 工具页面组件
 - `ui/` - 通用 UI 组件（按钮、输入框等）
 - `websocket/` - WebSocket 管理组件
+- `AppSidebar.tsx` - 全局图标侧边栏（类似 cherry-studio）
 - `ConfirmDialog.tsx` - 确认对话框
-- `Dashboard.tsx` - 仪表盘主页
 - `HelpTip.tsx` - 帮助提示组件
-- `Providers.tsx` - Provider 上下文
-- `Sidebar.tsx` - 侧边栏导航
+- `Modal.tsx` - 模态框组件
+- `Providers.tsx` - Provider 管理页面
+- `Sidebar.tsx` - 旧版侧边栏导航（已弃用）
+- `SplashScreen.tsx` - 启动画面组件
 
 ## 更新提醒
 

@@ -8,10 +8,12 @@
 //! - `error`: 流式错误类型定义
 //! - `metrics`: 流式指标类型定义
 //! - `aws_parser`: AWS Event Stream 解析器（用于 Kiro/CodeWhisperer）
+//! - `anthropic_sse`: Anthropic SSE 事件生成器（将 AWS 事件转换为 Anthropic SSE 格式）
 //! - `converter`: 流式格式转换器
 //! - `traits`: StreamingProvider trait 定义
 //! - `manager`: 流式管理器
 
+pub mod anthropic_sse;
 pub mod aws_parser;
 pub mod converter;
 pub mod error;
@@ -20,6 +22,7 @@ pub mod metrics;
 pub mod traits;
 
 // 重新导出核心类型
+pub use anthropic_sse::{AnthropicSseGenerator, ToolCallState};
 pub use aws_parser::{
     extract_content, extract_tool_calls, serialize_event, AwsEvent, AwsEventStreamParser,
     ParserState,

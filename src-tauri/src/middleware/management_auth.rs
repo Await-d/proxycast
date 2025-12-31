@@ -53,6 +53,14 @@ pub(crate) fn clear_auth_failure_state() {
     map.clear();
 }
 
+/// 清除特定 client_id 的认证失败状态（用于测试）
+/// 只清除指定的条目，不影响其他并行测试
+#[cfg(test)]
+pub(crate) fn clear_auth_failure_state_for(client_id: &str) {
+    let mut map = failure_map().lock().unwrap();
+    map.remove(client_id);
+}
+
 /// Management API 认证层
 ///
 /// 用于包装需要认证的管理端点

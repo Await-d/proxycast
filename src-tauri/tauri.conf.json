@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ProxyCast",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "identifier": "com.proxycast.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -14,10 +14,13 @@
     "windows": [
       {
         "title": "ProxyCast",
-        "width": 1000,
-        "height": 700,
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "center": true
       }
     ],
     "security": {

@@ -29,7 +29,7 @@ use std::sync::Arc;
 use tauri::{Manager, Runtime};
 use tokio::sync::RwLock;
 
-use agent::AsterProcessState;
+use agent::{GooseAgentState, NativeAgentState};
 use commands::browser_interceptor_cmd::BrowserInterceptorState;
 use commands::flow_monitor_cmd::{
     BatchOperationsState, BookmarkManagerState, EnhancedStatsServiceState, FlowInterceptorState,
@@ -1692,8 +1692,11 @@ pub fn run() {
     // Initialize BrowserInterceptorState
     let browser_interceptor_state = BrowserInterceptorState::default();
 
-    // Initialize AsterProcessState
-    let aster_process_state = AsterProcessState::default();
+    // Initialize NativeAgentState
+    let native_agent_state = NativeAgentState::new();
+
+    // Initialize GooseAgentState
+    let goose_agent_state = GooseAgentState::new();
 
     // FlowQueryService 需要 file_store，如果没有则创建一个临时的
     let flow_query_service_state = if let Some(file_store) = flow_file_store {
@@ -1793,7 +1796,8 @@ pub fn run() {
         .manage(enhanced_stats_service_state)
         .manage(batch_operations_state)
         .manage(browser_interceptor_state)
-        .manage(aster_process_state)
+        .manage(native_agent_state)
+        .manage(goose_agent_state)
         .on_window_event(move |window, event| {
             // 处理窗口关闭事件
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -2110,6 +2114,7 @@ pub fn run() {
             commands::skill_cmd::get_skill_repos,
             commands::skill_cmd::add_skill_repo,
             commands::skill_cmd::remove_skill_repo,
+            commands::skill_cmd::get_installed_proxycast_skills,
             // Provider Pool commands
             commands::provider_pool_cmd::get_provider_pool_overview,
             commands::provider_pool_cmd::get_provider_pool_credentials,
@@ -2414,14 +2419,24 @@ pub fn run() {
             commands::agent_cmd::agent_list_sessions,
             commands::agent_cmd::agent_get_session,
             commands::agent_cmd::agent_delete_session,
-            // Binary component commands
-            commands::binary_cmd::get_aster_status,
-            commands::binary_cmd::install_aster,
-            commands::binary_cmd::uninstall_aster,
-            commands::binary_cmd::check_aster_update,
-            commands::binary_cmd::update_aster,
-            commands::binary_cmd::get_aster_binary_path,
-            commands::binary_cmd::is_aster_installed,
+            // Native Agent commands
+            commands::native_agent_cmd::native_agent_init,
+            commands::native_agent_cmd::native_agent_status,
+            commands::native_agent_cmd::native_agent_reset,
+            commands::native_agent_cmd::native_agent_chat,
+            commands::native_agent_cmd::native_agent_chat_stream,
+            commands::native_agent_cmd::native_agent_create_session,
+            commands::native_agent_cmd::native_agent_get_session,
+            commands::native_agent_cmd::native_agent_delete_session,
+            commands::native_agent_cmd::native_agent_list_sessions,
+            // Goose Agent commands
+            commands::goose_agent_cmd::goose_agent_init,
+            commands::goose_agent_cmd::goose_agent_status,
+            commands::goose_agent_cmd::goose_agent_reset,
+            commands::goose_agent_cmd::goose_agent_create_session,
+            commands::goose_agent_cmd::goose_agent_send_message,
+            commands::goose_agent_cmd::goose_agent_extend_system_prompt,
+            commands::goose_agent_cmd::goose_agent_list_providers,
             // Network commands
             commands::network_cmd::get_network_info,
         ])

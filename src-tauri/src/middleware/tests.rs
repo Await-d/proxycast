@@ -4,7 +4,8 @@
 
 use crate::config::RemoteManagementConfig;
 use crate::middleware::management_auth::{
-    clear_auth_failure_state, ManagementAuthLayer, ManagementAuthService,
+    clear_auth_failure_state, clear_auth_failure_state_for, ManagementAuthLayer,
+    ManagementAuthService,
 };
 use axum::{
     body::Body,
@@ -136,29 +137,39 @@ fn test_management_auth_rate_limit_after_failures() {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     // 使用唯一的 IP 地址避免测试间干扰
-    // 使用时间戳和进程ID组合来确保唯一性
-    let unique_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-    let client_ip = format!(
-        "203.0.113.{}",
-        (unique_id ^ std::process::id() as u64) % 256
-    );
+    // 直接使用原子计数器确保唯一性，避免与其他测试冲突
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static RATE_LIMIT_TEST_COUNTER: AtomicU32 = AtomicU32::new(1);
+    let unique_id = RATE_LIMIT_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    // 使用 TEST-NET-2 (198.51.100.0/24) 范围，确保与其他测试不冲突
+    let octet3 = ((unique_id >> 8) & 0xFF) as u8;
+    let octet4 = (unique_id & 0xFF) as u8;
+    let client_ip = format!("198.51.{}.{}", 100 + (octet3 % 155), octet4.max(1));
     let addr: SocketAddr = format!("{}:12345", client_ip).parse().unwrap();
 
-    for _ in 0..5 {
+    // 发送 5 次失败请求，每次都应该返回 401
+    for i in 0..5 {
         let mut req = create_request_with_management_key(Some("invalid"));
         // 安全修复后不再信任 X-Forwarded-For，需要注入 ConnectInfo
         req.extensions_mut().insert(ConnectInfo(addr));
         let response = rt.block_on(async { service.call(req).await.unwrap() });
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "Request {} should return 401",
+            i + 1
+        );
     }
 
+    // 第 6 次请求应该被限速，返回 429
     let mut req = create_request_with_management_key(Some("invalid"));
     req.extensions_mut().insert(ConnectInfo(addr));
     let response = rt.block_on(async { service.call(req).await.unwrap() });
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "Request 6 should return 429 after 5 failures"
+    );
 }
 
 proptest! {
@@ -171,7 +182,8 @@ proptest! {
     fn prop_management_auth_rejection_missing_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        // 只清除 "unknown" 客户端的状态，避免影响并行测试
+        clear_auth_failure_state_for("unknown");
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,
@@ -207,7 +219,8 @@ proptest! {
     fn prop_management_auth_rejection_invalid_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        // 只清除 "unknown" 客户端的状态，避免影响并行测试
+        clear_auth_failure_state_for("unknown");
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,
@@ -244,7 +257,8 @@ proptest! {
     fn prop_management_auth_acceptance_valid_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        // 只清除 "unknown" 客户端的状态，避免影响并行测试
+        clear_auth_failure_state_for("unknown");
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,
@@ -280,7 +294,8 @@ proptest! {
     fn prop_management_auth_acceptance_x_management_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        // 只清除 "unknown" 客户端的状态，避免影响并行测试
+        clear_auth_failure_state_for("unknown");
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,
@@ -316,7 +331,8 @@ proptest! {
     fn prop_management_auth_rejection_invalid_x_management_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        // 只清除 "unknown" 客户端的状态，避免影响并行测试
+        clear_auth_failure_state_for("unknown");
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,

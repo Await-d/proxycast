@@ -37,11 +37,11 @@ interface SidebarProps {
 }
 
 const navItems = [
+  { id: "agent" as Page, label: "AI Agent", icon: Bot },
   { id: "api-server" as Page, label: "API Server", icon: Globe },
   { id: "provider-pool" as Page, label: "凭证池", icon: Database },
   { id: "config-management" as Page, label: "配置管理", icon: FileCode },
   { id: "flow-monitor" as Page, label: "Flow Monitor", icon: Activity },
-  { id: "agent" as Page, label: "AI Agent", icon: Bot },
   { id: "tools" as Page, label: "工具", icon: Wrench },
   { id: "plugins" as Page, label: "插件中心", icon: Puzzle },
   { id: "settings" as Page, label: "设置", icon: Settings },

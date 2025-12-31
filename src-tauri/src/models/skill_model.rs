@@ -75,6 +75,13 @@ impl SkillRepo {
 
 pub fn get_default_skill_repos() -> Vec<SkillRepo> {
     vec![
+        // ProxyCast 官方仓库（排第一位）
+        SkillRepo {
+            owner: "proxycast".to_string(),
+            name: "skills".to_string(),
+            branch: "main".to_string(),
+            enabled: true,
+        },
         SkillRepo {
             owner: "ComposioHQ".to_string(),
             name: "awesome-claude-skills".to_string(),
@@ -97,3 +104,70 @@ pub fn get_default_skill_repos() -> Vec<SkillRepo> {
 }
 
 pub type SkillStates = HashMap<String, SkillState>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Feature: skills-platform-mvp, Property 1: Default Repositories Include ProxyCast Official
+    /// Validates: Requirements 1.1, 1.2, 1.3
+    #[test]
+    fn test_default_repos_include_proxycast_official() {
+        let repos = get_default_skill_repos();
+
+        // 验证列表非空
+        assert!(!repos.is_empty(), "默认仓库列表不应为空");
+
+        // 验证第一个仓库是 ProxyCast 官方仓库
+        let first_repo = &repos[0];
+        assert_eq!(
+            first_repo.owner, "proxycast",
+            "第一个仓库的 owner 应为 proxycast"
+        );
+        assert_eq!(first_repo.name, "skills", "第一个仓库的 name 应为 skills");
+        assert_eq!(first_repo.branch, "main", "第一个仓库的 branch 应为 main");
+        assert!(first_repo.enabled, "ProxyCast 官方仓库应默认启用");
+    }
+
+    /// Property 1: Default Repositories Include ProxyCast Official (Property-Based Test)
+    /// For any call to get_default_skill_repos(), the returned list SHALL contain
+    /// a SkillRepo with owner="proxycast", name="skills", branch="main", and enabled=true,
+    /// and this repo SHALL be the first item in the list.
+    /// Validates: Requirements 1.1, 1.2, 1.3
+    proptest! {
+        #[test]
+        fn prop_default_repos_proxycast_first(_seed in 0u64..1000) {
+            // 无论调用多少次，结果应该一致
+            let repos = get_default_skill_repos();
+
+            // Property: 列表非空
+            prop_assert!(!repos.is_empty());
+
+            // Property: 第一个仓库是 ProxyCast 官方仓库
+            let first = &repos[0];
+            prop_assert_eq!(&first.owner, "proxycast");
+            prop_assert_eq!(&first.name, "skills");
+            prop_assert_eq!(&first.branch, "main");
+            prop_assert!(first.enabled);
+        }
+    }
+
+    #[test]
+    fn test_proxycast_repo_exists_in_list() {
+        let repos = get_default_skill_repos();
+
+        // 验证 ProxyCast 仓库存在于列表中
+        let proxycast_repo = repos
+            .iter()
+            .find(|r| r.owner == "proxycast" && r.name == "skills");
+        assert!(
+            proxycast_repo.is_some(),
+            "ProxyCast 官方仓库应存在于默认列表中"
+        );
+
+        let repo = proxycast_repo.unwrap();
+        assert_eq!(repo.branch, "main");
+        assert!(repo.enabled);
+    }
+}

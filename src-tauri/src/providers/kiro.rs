@@ -249,9 +249,17 @@ pub struct KiroProvider {
 
 impl Default for KiroProvider {
     fn default() -> Self {
+        // 创建带超时配置的 HTTP 客户端
+        // 参考 AIClient-2-API: AXIOS_TIMEOUT: 300000 (5分钟)
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30)) // 连接超时 30 秒
+            .timeout(std::time::Duration::from_secs(300)) // 总超时 5 分钟
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
         Self {
             credentials: KiroCredentials::default(),
-            client: Client::new(),
+            client,
             creds_path: None,
         }
     }
@@ -1153,7 +1161,7 @@ impl StreamingProvider for KiroProvider {
         let kiro_version = get_kiro_version();
         let (os_name, node_version) = get_system_runtime_info();
 
-        tracing::debug!(
+        tracing::info!(
             "[KIRO_STREAM] 发起流式请求: url={} machine_id={}...",
             url,
             &machine_id[..16]
@@ -1178,11 +1186,16 @@ impl StreamingProvider for KiroProvider {
                     "aws-sdk-js/1.0.0 ua/2.1 os/{os_name} lang/js md/nodejs#{node_version} api/codewhispererruntime#1.0.0 m/E KiroIDE-{kiro_version}-{machine_id}"
                 ),
             )
-            .header("Connection", "close")
+            // 注意：不要设置 Connection: close，否则会导致流式响应无法工作
             .json(&cw_request)
             .send()
             .await
-            .map_err(|e| ProviderError::from_reqwest_error(&e))?;
+            .map_err(|e| {
+                tracing::error!("[KIRO_STREAM] 请求发送失败: {}", e);
+                ProviderError::from_reqwest_error(&e)
+            })?;
+
+        tracing::info!("[KIRO_STREAM] 收到响应: status={}", resp.status());
 
         // 检查响应状态
         let status = resp.status();

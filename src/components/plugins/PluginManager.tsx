@@ -17,7 +17,6 @@ import {
   Download,
   Cpu,
 } from "lucide-react";
-import { BinaryComponents } from "@/components/extensions/BinaryComponents";
 import { PluginInstallDialog } from "./PluginInstallDialog";
 import { PluginUninstallDialog } from "./PluginUninstallDialog";
 import { PluginItemContextMenu } from "./PluginItemContextMenu";
@@ -245,9 +244,6 @@ export function PluginManager() {
 
   return (
     <div className="space-y-4">
-      {/* 二进制组件 */}
-      <BinaryComponents />
-
       {/* 状态概览 */}
       <div className="rounded-lg border bg-card p-4">
         <div className="flex items-center justify-between mb-4">

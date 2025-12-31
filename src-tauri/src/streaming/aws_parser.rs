@@ -1609,5 +1609,183 @@ mod property_tests {
 
             prop_assert_eq!(content1, content2, "增量解析应该产生相同的内容");
         }
+
+        // ========================================================================
+        // Property 8: 解析容错
+        //
+        // *对于任意*包含无效 JSON 的 AWS Event Stream 数据，解析器应该跳过
+        // 无效部分并继续处理后续有效数据。
+        //
+        // **验证: 需求 5.2**
+        // ========================================================================
+
+        /// Property 8: 解析容错 - 无效 JSON 后的有效数据应该被正确解析
+        ///
+        /// **Feature: kiro-streaming-fix, Property 8: 解析容错**
+        /// **Validates: Requirements 5.2**
+        #[test]
+        fn prop_parse_error_recovery(
+            valid_text in arb_content_text(),
+            invalid_prefix in prop::string::string_regex(r"\{[a-z]+\}").unwrap()
+        ) {
+            let mut parser = AwsEventStreamParser::new();
+
+            // 构造数据：无效 JSON + 有效 JSON
+            let valid_json = format!(r#"{{"content":"{}"}}"#, valid_text);
+            let data = format!("{}{}", invalid_prefix, valid_json);
+
+            // 解析
+            let events = parser.process(data.as_bytes());
+
+            // 验证：应该有一个解析错误和一个有效内容
+            let parse_errors: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, AwsEvent::ParseError { .. }))
+                .collect();
+            let content_events: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, AwsEvent::Content { .. }))
+                .collect();
+
+            prop_assert!(
+                parse_errors.len() >= 1,
+                "应该至少有一个解析错误"
+            );
+            prop_assert_eq!(
+                content_events.len(),
+                1,
+                "应该有一个有效内容事件"
+            );
+
+            // 验证内容正确
+            if let AwsEvent::Content { text } = &content_events[0] {
+                prop_assert_eq!(text, &valid_text, "内容应该与原始文本一致");
+            }
+        }
+
+        /// Property 8: 解析容错 - 多个无效 JSON 之间的有效数据应该被正确解析
+        ///
+        /// **Feature: kiro-streaming-fix, Property 8: 解析容错**
+        /// **Validates: Requirements 5.2**
+        #[test]
+        fn prop_parse_error_recovery_multiple_invalid(
+            valid_texts in prop::collection::vec(arb_content_text(), 1..5)
+        ) {
+            let mut parser = AwsEventStreamParser::new();
+
+            // 构造数据：交替的无效 JSON 和有效 JSON
+            let mut data = String::new();
+            for (i, text) in valid_texts.iter().enumerate() {
+                // 添加无效 JSON
+                data.push_str(&format!("{{invalid{}}}", i));
+                // 添加有效 JSON
+                data.push_str(&format!(r#"{{"content":"{}"}}"#, text));
+            }
+
+            // 解析
+            let events = parser.process(data.as_bytes());
+
+            // 验证：应该有与 valid_texts 数量相同的有效内容事件
+            let content_events: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, AwsEvent::Content { .. }))
+                .collect();
+
+            prop_assert_eq!(
+                content_events.len(),
+                valid_texts.len(),
+                "应该有与输入数量相同的有效内容事件"
+            );
+
+            // 验证内容顺序正确
+            for (i, event) in content_events.iter().enumerate() {
+                if let AwsEvent::Content { text } = event {
+                    prop_assert_eq!(
+                        text,
+                        &valid_texts[i],
+                        "内容顺序应该与输入一致"
+                    );
+                }
+            }
+        }
+
+        /// Property 8: 解析容错 - 解析错误计数应该正确累积
+        ///
+        /// **Feature: kiro-streaming-fix, Property 8: 解析容错**
+        /// **Validates: Requirements 5.2**
+        #[test]
+        fn prop_parse_error_count_accumulates(
+            num_invalid in 1usize..10usize,
+            valid_text in arb_content_text()
+        ) {
+            let mut parser = AwsEventStreamParser::new();
+
+            // 发送多个无效 JSON
+            for i in 0..num_invalid {
+                parser.process(format!("{{invalid{}}}", i).as_bytes());
+            }
+
+            // 验证错误计数
+            prop_assert_eq!(
+                parser.parse_error_count() as usize,
+                num_invalid,
+                "错误计数应该等于无效 JSON 的数量"
+            );
+
+            // 发送有效 JSON
+            let valid_json = format!(r#"{{"content":"{}"}}"#, valid_text);
+            let events = parser.process(valid_json.as_bytes());
+
+            // 验证：有效 JSON 不应增加错误计数
+            prop_assert_eq!(
+                parser.parse_error_count() as usize,
+                num_invalid,
+                "有效 JSON 不应增加错误计数"
+            );
+
+            // 验证有效内容被正确解析
+            let content_events: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, AwsEvent::Content { .. }))
+                .collect();
+            prop_assert_eq!(content_events.len(), 1, "应该有一个有效内容事件");
+        }
+
+        /// Property 8: 解析容错 - 二进制垃圾数据后的有效 JSON 应该被正确解析
+        ///
+        /// **Feature: kiro-streaming-fix, Property 8: 解析容错**
+        /// **Validates: Requirements 5.2**
+        #[test]
+        fn prop_parse_error_recovery_binary_garbage(
+            valid_text in arb_content_text(),
+            garbage_len in 1usize..50usize
+        ) {
+            let mut parser = AwsEventStreamParser::new();
+
+            // 构造数据：二进制垃圾 + 有效 JSON
+            let mut data = vec![0xFF; garbage_len];
+            let valid_json = format!(r#"{{"content":"{}"}}"#, valid_text);
+            data.extend_from_slice(valid_json.as_bytes());
+
+            // 解析
+            let events = parser.process(&data);
+
+            // 验证：应该有一个有效内容事件
+            let content_events: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, AwsEvent::Content { .. }))
+                .collect();
+
+            prop_assert_eq!(
+                content_events.len(),
+                1,
+                "应该有一个有效内容事件"
+            );
+
+            // 验证内容正确
+            if let AwsEvent::Content { text } = &content_events[0] {
+                prop_assert_eq!(text, &valid_text, "内容应该与原始文本一致");
+            }
+        }
     }
 }

@@ -8,11 +8,36 @@
 //! - `StreamManager`: 管理流式请求的生命周期
 //! - `StreamingProvider`: Provider 的流式 API 接口
 //! - `FlowMonitor`: 实时捕获流式响应
+//! - `handle_kiro_stream()`: Kiro 凭证的真正流式处理（AWS Event Stream → Anthropic SSE）
+//!
+//! # Kiro 凭证流式处理
+//!
+//! 当使用 Kiro 凭证且 `stream=true` 时，系统会：
+//! 1. 调用 `KiroProvider.call_api_stream()` 获取 AWS Event Stream 格式的流式响应
+//! 2. 使用 `AwsEventStreamParser` 实时解析每个 JSON payload
+//! 3. 使用 `AnthropicSseGenerator` 转换为 Anthropic SSE 格式
+//! 4. 通过 `FlowMonitor.process_chunk()` 记录每个 chunk
+//!
+//! # 错误处理
+//!
+//! 流式传输期间的错误处理：
+//! - 网络错误：记录日志，发送 SSE 错误事件，调用 FlowMonitor.fail_flow()
+//! - 解析错误：记录警告，跳过无效数据，继续处理后续 chunks
+//! - 上游错误：将 Provider 返回的错误转发给客户端
 //!
 //! # 需求覆盖
 //!
+//! - 需求 1.1: 使用 reqwest 的流式响应模式
+//! - 需求 1.2: 实时解析每个 JSON payload 并转换为 Anthropic SSE 事件
+//! - 需求 1.3: 立即发送 content_block_delta 事件给客户端
+//! - 需求 3.1: Flow Monitor 记录 chunk_count 大于 0
+//! - 需求 3.2: 调用 process_chunk 更新流重建器
 //! - 需求 4.2: 调用 process_chunk 更新流重建器
-//! - 需求 5.1: 在收到 chunk 后立即转发给客户端
+//! - 需求 5.1: 流式传输期间发生网络错误时，发出错误事件并以失败状态完成 flow
+//! - 需求 5.2: AWS Event Stream 解析失败时记录错误并继续处理后续 chunks
+//! - 需求 5.3: 将上游 Provider 返回的错误转发给客户端
+//! - 需求 6.1: 流式请求使用 handle_kiro_stream()
+//! - 需求 6.2: 非流式请求返回完整 JSON 响应
 
 use axum::{
     body::Body,
@@ -26,6 +51,7 @@ use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::converter::openai_to_antigravity::{
     convert_antigravity_to_openai_response, convert_openai_to_antigravity_with_context,
 };
+use crate::flow_monitor::models::{FlowError, FlowErrorType};
 use crate::flow_monitor::stream_rebuilder::StreamFormat;
 use crate::models::anthropic::AnthropicMessagesRequest;
 use crate::models::openai::ChatCompletionRequest;
@@ -38,9 +64,10 @@ use crate::server_utils::{
     build_anthropic_response, build_anthropic_stream_response, parse_cw_response, safe_truncate,
     CWParsedResponse,
 };
+use crate::streaming::traits::StreamingProvider;
 use crate::streaming::{
-    StreamConfig, StreamContext, StreamError, StreamFormat as StreamingFormat, StreamManager,
-    StreamResponse,
+    AnthropicSseGenerator, AwsEvent, AwsEventStreamParser, StreamConfig, StreamContext,
+    StreamError, StreamFormat as StreamingFormat, StreamManager, StreamResponse,
 };
 
 /// 根据凭证调用 Provider (Anthropic 格式)
@@ -60,8 +87,9 @@ pub async fn call_provider_anthropic(
     if request.stream {
         if let Some(fid) = flow_id {
             // 根据凭证类型确定流格式
+            // 注意：Kiro 凭证虽然原始返回 AWS Event Stream，但 handle_kiro_stream 会将其转换为 Anthropic SSE 格式
             let format = match &credential.credential {
-                CredentialData::KiroOAuth { .. } => StreamFormat::OpenAI,
+                CredentialData::KiroOAuth { .. } => StreamFormat::Anthropic, // Kiro 流式响应被转换为 Anthropic SSE 格式
                 CredentialData::ClaudeKey { .. } => StreamFormat::Anthropic,
                 CredentialData::AntigravityOAuth { .. } => StreamFormat::Gemini,
                 _ => StreamFormat::Unknown,
@@ -72,6 +100,12 @@ pub async fn call_provider_anthropic(
 
     match &credential.credential {
         CredentialData::KiroOAuth { creds_file_path } => {
+            // 如果是流式请求，使用真正的流式处理（需求 1.1, 6.1）
+            if request.stream {
+                return handle_kiro_stream(state, credential, request, flow_id).await;
+            }
+
+            // 非流式请求，使用现有的 call_api() 方法（需求 6.1, 6.2, 6.3）
             // 使用 TokenCacheService 获取有效 token
             let db = match &state.db {
                 Some(db) => db,
@@ -125,9 +159,11 @@ pub async fn call_provider_anthropic(
             };
             // 使用获取到的 token 创建 KiroProvider
             let mut kiro = KiroProvider::new();
-            kiro.credentials.access_token = Some(token);
             // 从源文件加载其他配置（region, profile_arn 等）
+            // 注意：必须先加载凭证文件，再设置 token，因为 load_credentials_from_path 会覆盖整个 credentials
             let _ = kiro.load_credentials_from_path(creds_file_path).await;
+            // 使用缓存的 token 覆盖文件中的 token（缓存的 token 更新）
+            kiro.credentials.access_token = Some(token);
             let openai_request = convert_anthropic_to_openai(request);
             let resp = match kiro.call_api(&openai_request).await {
                 Ok(r) => r,
@@ -158,11 +194,8 @@ pub async fn call_provider_anthropic(
                             Some(&request.model),
                         );
                         let _ = state.pool_service.record_usage(db, &credential.uuid);
-                        if request.stream {
-                            build_anthropic_stream_response(&request.model, &parsed)
-                        } else {
-                            build_anthropic_response(&request.model, &parsed)
-                        }
+                        // 非流式请求返回完整 JSON 响应（需求 6.2）
+                        build_anthropic_response(&request.model, &parsed)
                     }
                     Err(e) => {
                         let _ = state.pool_service.mark_unhealthy(
@@ -220,11 +253,8 @@ pub async fn call_provider_anthropic(
                                         Some(&request.model),
                                     );
                                     let _ = state.pool_service.record_usage(db, &credential.uuid);
-                                    if request.stream {
-                                        build_anthropic_stream_response(&request.model, &parsed)
-                                    } else {
-                                        build_anthropic_response(&request.model, &parsed)
-                                    }
+                                    // 非流式请求返回完整 JSON 响应（需求 6.2）
+                                    build_anthropic_response(&request.model, &parsed)
                                 }
                                 Err(e) => {
                                     let _ = state.pool_service.mark_unhealthy(
@@ -499,10 +529,11 @@ pub async fn call_provider_anthropic(
             state.logs.write().await.add(
                 "info",
                 &format!(
-                    "[CLAUDE] 使用 Claude API 代理: base_url={} -> {}/v1/messages credential_uuid={}",
+                    "[CLAUDE] 使用 Claude API 代理: base_url={} -> {}/v1/messages credential_uuid={} stream={}",
                     actual_base_url,
                     request_url,
-                    &credential.uuid[..8]
+                    &credential.uuid[..8],
+                    request.stream
                 ),
             );
             // 打印请求参数
@@ -521,11 +552,46 @@ pub async fn call_provider_anthropic(
                     state.logs.write().await.add(
                         "info",
                         &format!(
-                            "[CLAUDE] 响应状态: status={} model={}",
+                            "[CLAUDE] 响应状态: status={} model={} stream={}",
                             status,
-                            request.model
+                            request.model,
+                            request.stream
                         ),
                     );
+
+                    // 如果是流式请求，直接透传流式响应
+                    if request.stream && status.is_success() {
+                        state.logs.write().await.add(
+                            "info",
+                            "[CLAUDE] 流式请求，透传 SSE 响应",
+                        );
+                        // 记录成功
+                        if let Some(db) = &state.db {
+                            let _ = state.pool_service.mark_healthy(
+                                db,
+                                &credential.uuid,
+                                Some(&request.model),
+                            );
+                            let _ = state.pool_service.record_usage(db, &credential.uuid);
+                        }
+                        // 透传流式响应，保持 SSE 格式
+                        let stream = resp.bytes_stream();
+                        return Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .header(header::CACHE_CONTROL, "no-cache")
+                            .header("Connection", "keep-alive")
+                            .body(Body::from_stream(stream))
+                            .unwrap_or_else(|_| {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"error": {"message": "Failed to build stream response"}})),
+                                )
+                                    .into_response()
+                            });
+                    }
+
+                    // 非流式请求，读取完整响应
                     match resp.text().await {
                         Ok(body) => {
                             if status.is_success() {
@@ -752,9 +818,11 @@ pub async fn call_provider_openai(
 
             // 使用获取到的 token 创建 KiroProvider
             let mut kiro = KiroProvider::new();
-            kiro.credentials.access_token = Some(token);
             // 从源文件加载其他配置（region, profile_arn 等）
+            // 注意：必须先加载凭证文件，再设置 token，因为 load_credentials_from_path 会覆盖整个 credentials
             let _ = kiro.load_credentials_from_path(creds_file_path).await;
+            // 使用缓存的 token 覆盖文件中的 token（缓存的 token 更新）
+            kiro.credentials.access_token = Some(token);
             match kiro.call_api(request).await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -1506,4 +1574,469 @@ pub async fn monitor_client_disconnect(cancel_token: tokio_util::sync::Cancellat
 
     // 等待取消令牌被触发（由其他地方触发）
     cancel_token.cancelled().await;
+}
+
+// ============================================================================
+// Kiro 凭证真正流式响应处理
+// ============================================================================
+
+/// Kiro 凭证流式响应处理
+///
+/// 实现真正的端到端流式传输，将 AWS Event Stream 格式转换为 Anthropic SSE 格式。
+///
+/// # 参数
+/// - `state`: 应用状态
+/// - `credential`: Kiro 凭证信息
+/// - `request`: Anthropic 格式请求
+/// - `flow_id`: Flow ID（可选，用于流式响应处理）
+///
+/// # 需求覆盖
+/// - 需求 1.1: 使用 reqwest 的流式响应模式
+/// - 需求 1.2: 实时解析每个 JSON payload 并转换为 Anthropic SSE 事件
+/// - 需求 1.3: 立即发送 content_block_delta 事件给客户端
+/// - 需求 3.1: Flow Monitor 记录 chunk_count 大于 0
+/// - 需求 3.2: 调用 process_chunk 更新流重建器
+/// - 需求 3.3: 流完成时拥有完整的重建响应内容
+/// - 需求 4.4: 在流式请求前检查 Token 是否即将过期（10分钟内）并提前刷新
+pub async fn handle_kiro_stream(
+    state: &AppState,
+    credential: &ProviderCredential,
+    request: &AnthropicMessagesRequest,
+    flow_id: Option<&str>,
+) -> Response {
+    tracing::info!(
+        "[KIRO_STREAM] handle_kiro_stream 被调用, model={}, flow_id={:?}",
+        request.model,
+        flow_id
+    );
+
+    // 提取凭证文件路径
+    let creds_file_path = match &credential.credential {
+        CredentialData::KiroOAuth { creds_file_path } => creds_file_path.clone(),
+        _ => {
+            tracing::error!("[KIRO_STREAM] 无效的凭证类型");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": {"message": "Invalid credential type for Kiro stream"}})),
+            )
+                .into_response();
+        }
+    };
+
+    tracing::info!("[KIRO_STREAM] 凭证文件路径: {}", creds_file_path);
+
+    // 获取数据库连接
+    let db = match &state.db {
+        Some(db) => db,
+        None => {
+            tracing::error!("[KIRO_STREAM] 数据库不可用");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": {"message": "Database not available"}})),
+            )
+                .into_response();
+        }
+    };
+
+    // 获取有效 token（需求 4.4: 检查 Token 是否即将过期，10分钟内则提前刷新）
+    let token = match state
+        .token_cache
+        .ensure_token_valid_for_streaming(db, &credential.uuid, 10)
+        .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(
+                "[KIRO_STREAM] Token validation failed, loading from source: {}",
+                e
+            );
+            // 回退到从源文件加载
+            let mut kiro = KiroProvider::new();
+            if let Err(e) = kiro.load_credentials_from_path(&creds_file_path).await {
+                let _ = state.pool_service.mark_unhealthy(
+                    db,
+                    &credential.uuid,
+                    Some(&format!("Failed to load credentials: {}", e)),
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": {"message": format!("Failed to load Kiro credentials: {}", e)}})),
+                )
+                    .into_response();
+            }
+            if let Err(e) = kiro.refresh_token().await {
+                let _ = state.pool_service.mark_unhealthy(
+                    db,
+                    &credential.uuid,
+                    Some(&format!("Token refresh failed: {}", e)),
+                );
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": {"message": format!("Token refresh failed: {}", e)}})),
+                )
+                    .into_response();
+            }
+            kiro.credentials.access_token.unwrap_or_default()
+        }
+    };
+
+    // 创建 KiroProvider 并设置 token
+    let mut kiro = KiroProvider::new();
+    // 从源文件加载其他配置（region, profile_arn 等）
+    // 注意：必须先加载凭证文件，再设置 token，因为 load_credentials_from_path 会覆盖整个 credentials
+    let _ = kiro.load_credentials_from_path(&creds_file_path).await;
+    // 使用缓存的 token 覆盖文件中的 token（缓存的 token 更新）
+    kiro.credentials.access_token = Some(token);
+
+    // 转换请求格式
+    let openai_request = convert_anthropic_to_openai(request);
+
+    tracing::info!("[KIRO_STREAM] 准备调用 call_api_stream");
+
+    // 调用流式 API（需求 4.1, 4.2, 4.3: 401/403 错误重试逻辑）
+    let stream_response = match kiro.call_api_stream(&openai_request).await {
+        Ok(stream) => {
+            tracing::info!("[KIRO_STREAM] call_api_stream 成功返回流");
+            stream
+        }
+        Err(e) => {
+            tracing::error!("[KIRO_STREAM] call_api_stream 失败: {}", e);
+            // 检查是否是 401/403 错误或 Token 过期，需要刷新 token 重试（需求 4.1）
+            let needs_token_refresh = matches!(
+                &e,
+                crate::providers::ProviderError::AuthenticationError(_)
+                    | crate::providers::ProviderError::TokenExpired(_)
+            );
+
+            if needs_token_refresh {
+                tracing::info!(
+                    "[KIRO_STREAM] Got auth/token error ({}), forcing token refresh for {}",
+                    e.short_message(),
+                    &credential.uuid[..8]
+                );
+                // 强制刷新 token（需求 4.1）
+                let new_token = match state
+                    .token_cache
+                    .refresh_and_cache(db, &credential.uuid, true)
+                    .await
+                {
+                    Ok(t) => t,
+                    Err(refresh_err) => {
+                        // 需求 4.3: Token 刷新失败时返回明确的错误信息
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&format!("Token refresh failed: {}", refresh_err)),
+                        );
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({
+                                "error": {
+                                    "type": "authentication_error",
+                                    "message": format!("Token refresh failed: {}", refresh_err)
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                };
+
+                // 使用新 token 重试（需求 4.2）
+                kiro.credentials.access_token = Some(new_token);
+                match kiro.call_api_stream(&openai_request).await {
+                    Ok(stream) => stream,
+                    Err(retry_err) => {
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&retry_err.to_string()),
+                        );
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({
+                                "error": {
+                                    "type": "api_error",
+                                    "message": format!("Retry failed after token refresh: {}", retry_err)
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            } else {
+                let _ =
+                    state
+                        .pool_service
+                        .mark_unhealthy(db, &credential.uuid, Some(&e.to_string()));
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": {
+                            "type": "api_error",
+                            "message": e.to_string()
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    // 记录成功
+    let _ = state
+        .pool_service
+        .mark_healthy(db, &credential.uuid, Some(&request.model));
+    let _ = state.pool_service.record_usage(db, &credential.uuid);
+
+    tracing::info!(
+        "[KIRO_STREAM] 开始处理流式响应, model={}, flow_id={:?}",
+        request.model,
+        flow_id
+    );
+
+    // 创建 AWS Event Stream 解析器和 Anthropic SSE 生成器
+    let parser = std::sync::Arc::new(tokio::sync::Mutex::new(AwsEventStreamParser::new()));
+    let generator = std::sync::Arc::new(tokio::sync::Mutex::new(AnthropicSseGenerator::new(
+        &request.model,
+    )));
+
+    // 获取 flow_id 的克隆用于回调
+    let flow_id_owned = flow_id.map(|s| s.to_string());
+    let flow_monitor = state.flow_monitor.clone();
+
+    // 创建转换流 - 使用 map 而不是 then，避免异步闭包的复杂性
+    let parser_clone = parser.clone();
+    let generator_clone = generator.clone();
+    let flow_id_for_stream = flow_id_owned.clone();
+    let flow_monitor_for_stream = flow_monitor.clone();
+
+    // 使用 async_stream 直接处理整个流
+    let generator_for_finalize = generator.clone();
+    let flow_id_for_finalize = flow_id_owned.clone();
+    let flow_monitor_for_finalize = flow_monitor.clone();
+
+    let final_stream = async_stream::stream! {
+        use futures::StreamExt;
+
+        let mut stream_response = stream_response;
+
+        while let Some(chunk_result) = stream_response.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    // 调试日志：记录接收到的字节数和原始数据预览
+                    let bytes_preview = if bytes.len() > 200 {
+                        format!("{}...", String::from_utf8_lossy(&bytes[..200]))
+                    } else {
+                        String::from_utf8_lossy(&bytes).to_string()
+                    };
+                    tracing::info!(
+                        "[KIRO_STREAM] 收到 {} 字节数据, 预览: {}",
+                        bytes.len(),
+                        bytes_preview.replace('\n', "\\n")
+                    );
+
+                    // 解析 AWS Event Stream
+                    let events = {
+                        let mut parser_guard = parser_clone.lock().await;
+                        parser_guard.process(&bytes)
+                    };
+
+                    // 调试日志：记录解析出的事件数量
+                    tracing::info!(
+                        "[KIRO_STREAM] 解析出 {} 个事件",
+                        events.len()
+                    );
+
+                    // 转换为 Anthropic SSE 事件
+                    for event in events {
+                        // 需求 5.2: 当 AWS Event Stream 解析失败时记录警告，跳过无效数据继续处理
+                        if let AwsEvent::ParseError { message, raw_data } = &event {
+                            tracing::warn!(
+                                "[KIRO_STREAM] AWS Event Stream 解析错误: {}, 原始数据: {:?}",
+                                message,
+                                raw_data.as_ref().map(|s| if s.len() > 100 { &s[..100] } else { s })
+                            );
+                            // 跳过无效数据，继续处理后续 chunks
+                            continue;
+                        }
+
+                        // 调试日志：记录事件类型
+                        tracing::info!(
+                            "[KIRO_STREAM] 处理事件: {:?}",
+                            match &event {
+                                AwsEvent::Content { text } => format!("Content({}字符): {}", text.len(), if text.len() > 50 { &text[..50] } else { text }),
+                                AwsEvent::ToolUseStart { id, name } => format!("ToolUseStart({}, {})", id, name),
+                                AwsEvent::ToolUseInput { id, input } => format!("ToolUseInput({}, {}字符)", id, input.len()),
+                                AwsEvent::ToolUseStop { id } => format!("ToolUseStop({})", id),
+                                AwsEvent::Stop => "Stop".to_string(),
+                                AwsEvent::Usage { credits, context_percentage } => format!("Usage({}, {})", credits, context_percentage),
+                                AwsEvent::FollowupPrompt { content } => format!("FollowupPrompt({}字符)", content.len()),
+                                AwsEvent::ParseError { message, .. } => format!("ParseError({})", message),
+                            }
+                        );
+
+                        let sse_strings = {
+                            let mut generator_guard = generator_clone.lock().await;
+                            generator_guard.process_event(event)
+                        };
+
+                        // 调试日志：记录生成的 SSE 事件数量和内容预览
+                        tracing::info!(
+                            "[KIRO_STREAM] 生成 {} 个 SSE 事件",
+                            sse_strings.len()
+                        );
+
+                        for sse_str in sse_strings {
+                            let preview = if sse_str.len() > 200 { &sse_str[..200] } else { &sse_str };
+                            tracing::info!(
+                                "[KIRO_STREAM] SSE 事件: {}",
+                                preview.replace('\n', "\\n")
+                            );
+
+                            // 调用 FlowMonitor.process_chunk()（需求 3.2）
+                            if let Some(ref fid) = flow_id_for_stream {
+                                // 解析 SSE 事件类型和数据
+                                let lines: Vec<&str> = sse_str.lines().collect();
+                                let mut event_type: Option<&str> = None;
+                                let mut data: Option<&str> = None;
+
+                                for line in &lines {
+                                    if line.starts_with("event: ") {
+                                        event_type = Some(&line[7..]);
+                                    } else if line.starts_with("data: ") {
+                                        data = Some(&line[6..]);
+                                    }
+                                }
+
+                                if let Some(d) = data {
+                                    let flow_monitor_clone = flow_monitor_for_stream.clone();
+                                    let fid_clone = fid.clone();
+                                    let event_type_owned = event_type.map(|s| s.to_string());
+                                    let data_owned = d.to_string();
+
+                                    tokio::spawn(async move {
+                                        flow_monitor_clone
+                                            .process_chunk(
+                                                &fid_clone,
+                                                event_type_owned.as_deref(),
+                                                &data_owned,
+                                            )
+                                            .await;
+                                    });
+                                }
+                            }
+
+                            // 立即 yield SSE 事件
+                            yield Ok::<String, StreamError>(sse_str);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // 需求 5.1, 5.3: 流式传输期间发生错误时，发出错误事件并以失败状态完成 flow
+                    tracing::error!("[KIRO_STREAM] 流式传输期间发生错误: {}", e);
+
+                    // 根据 StreamError 类型映射到 FlowErrorType
+                    let flow_error_type = match &e {
+                        StreamError::Network(_) => FlowErrorType::Network,
+                        StreamError::Timeout => FlowErrorType::Timeout,
+                        StreamError::ProviderError { status, .. } => {
+                            FlowErrorType::from_status_code(*status)
+                        }
+                        StreamError::ParseError(_) => FlowErrorType::Other,
+                        StreamError::ClientDisconnected => FlowErrorType::Cancelled,
+                        StreamError::BufferOverflow => FlowErrorType::Other,
+                        StreamError::Internal(_) => FlowErrorType::ServerError,
+                    };
+
+                    // 调用 FlowMonitor.fail_flow() 标记失败
+                    if let Some(ref fid) = flow_id_for_stream {
+                        let flow_error = FlowError::new(
+                            flow_error_type,
+                            format!("流式传输错误: {}", e),
+                        );
+                        flow_monitor_for_stream.fail_flow(fid, flow_error).await;
+                    }
+
+                    // 发送 SSE 错误事件
+                    yield Err(e);
+                    return;
+                }
+            }
+        }
+
+        tracing::info!("[KIRO_STREAM] 流结束，生成 finalize 事件");
+
+        // 流结束，生成 finalize 事件
+        let final_events = {
+            let mut generator_guard = generator_for_finalize.lock().await;
+            generator_guard.finalize()
+        };
+
+        tracing::info!("[KIRO_STREAM] finalize 生成 {} 个事件", final_events.len());
+
+        for sse_str in final_events {
+            tracing::info!(
+                "[KIRO_STREAM] finalize 事件: {}",
+                if sse_str.len() > 200 { &sse_str[..200] } else { &sse_str }.replace('\n', "\\n")
+            );
+            // 调用 FlowMonitor.process_chunk()
+            if let Some(ref fid) = flow_id_for_finalize {
+                let lines: Vec<&str> = sse_str.lines().collect();
+                let mut event_type: Option<&str> = None;
+                let mut data: Option<&str> = None;
+
+                for line in &lines {
+                    if line.starts_with("event: ") {
+                        event_type = Some(&line[7..]);
+                    } else if line.starts_with("data: ") {
+                        data = Some(&line[6..]);
+                    }
+                }
+
+                if let Some(d) = data {
+                    let flow_monitor_clone = flow_monitor_for_finalize.clone();
+                    let fid_clone = fid.clone();
+                    let event_type_owned = event_type.map(|s| s.to_string());
+                    let data_owned = d.to_string();
+
+                    tokio::spawn(async move {
+                        flow_monitor_clone
+                            .process_chunk(&fid_clone, event_type_owned.as_deref(), &data_owned)
+                            .await;
+                    });
+                }
+            }
+
+            yield Ok::<String, StreamError>(sse_str);
+        }
+    };
+
+    tracing::info!("[KIRO_STREAM] 构建 SSE 响应");
+
+    // 转换为 Body 流
+    let body_stream = final_stream.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+        match result {
+            Ok(event) => Ok(axum::body::Bytes::from(event)),
+            Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+        }
+    });
+
+    // 构建 SSE 响应
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .header(header::TRANSFER_ENCODING, "chunked")
+        .header("X-Accel-Buffering", "no")
+        .body(Body::from_stream(body_stream))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"error": {"message": "Failed to build streaming response"}}),
+                ),
+            )
+                .into_response()
+        })
 }

@@ -1212,4 +1212,58 @@ impl TokenCacheService {
         self.refresh_and_cache_with_events(db, uuid, force, None)
             .await
     }
+
+    /// 检查 Token 是否即将过期并提前刷新（需求 4.4）
+    ///
+    /// 在流式请求前调用此方法，检查 Token 是否在指定分钟数内过期。
+    /// 如果即将过期，则提前刷新 Token。
+    ///
+    /// # 参数
+    /// - `db`: 数据库连接
+    /// - `uuid`: 凭证 UUID
+    /// - `minutes`: 检查的时间阈值（分钟），默认 10 分钟
+    ///
+    /// # 返回
+    /// - `Ok(token)`: 有效的 Token（可能是刷新后的新 Token）
+    /// - `Err(error)`: 获取或刷新 Token 失败
+    pub async fn ensure_token_valid_for_streaming(
+        &self,
+        db: &DbConnection,
+        uuid: &str,
+        minutes: i64,
+    ) -> Result<String, String> {
+        // 首先检查缓存
+        let cached = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            crate::database::dao::provider_pool::ProviderPoolDao::get_token_cache(&conn, uuid)
+                .map_err(|e| e.to_string())?
+        };
+
+        // 检查是否需要提前刷新（使用指定的分钟数阈值）
+        if let Some(ref cache) = cached {
+            if cache.is_valid() && !cache.is_expiring_within_minutes(minutes) {
+                if let Some(token) = &cache.access_token {
+                    tracing::debug!(
+                        "[TOKEN_CACHE] Token valid for streaming ({}min threshold) for {}, expires at {:?}",
+                        minutes,
+                        &uuid[..8],
+                        cache.expiry_time
+                    );
+                    return Ok(token.clone());
+                }
+            }
+
+            // Token 即将过期（在指定分钟数内），提前刷新
+            if cache.is_expiring_within_minutes(minutes) {
+                tracing::info!(
+                    "[TOKEN_CACHE] Token expiring within {}min for {}, proactively refreshing",
+                    minutes,
+                    &uuid[..8]
+                );
+            }
+        }
+
+        // 需要刷新（无缓存、已过期或即将过期）
+        self.refresh_and_cache(db, uuid, false).await
+    }
 }

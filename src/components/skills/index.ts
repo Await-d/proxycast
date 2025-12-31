@@ -1,3 +1,3 @@
 export { SkillsPage } from "./SkillsPage";
-export { SkillCard } from "./SkillCard";
+export { SkillCard, getSkillSource, type SkillSource } from "./SkillCard";
 export { RepoManagerPanel } from "./RepoManagerPanel";
